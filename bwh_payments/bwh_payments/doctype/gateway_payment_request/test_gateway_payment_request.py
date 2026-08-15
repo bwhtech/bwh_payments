@@ -228,6 +228,28 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 	# --- webhook status ---------------------------------------------------
 
+	def test_a_replayed_webhook_event_is_ignored(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		self.assertTrue(payment_request.apply_webhook_status("Paid", "evt_1"))
+		self.assertFalse(payment_request.apply_webhook_status("Paid", "evt_1"))
+		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_webhook_cannot_reopen_a_settled_payment(self):
+		payment_request = make_payment_request(100, "SAR")
+		payment_request.apply_webhook_status("Paid", "evt_1")
+
+		self.assertFalse(payment_request.apply_webhook_status("Cancelled", "evt_2"))
+		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_webhook_cannot_write_a_refund_status(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		self.assertFalse(payment_request.apply_webhook_status("Refunded", "evt_1"))
+		self.assertEqual(payment_request.status, "Pending")
+
+	# --- schema invariants ------------------------------------------------
+
 	def test_order_ref_is_unique(self):
 		first = make_payment_request(100, "SAR")
 
