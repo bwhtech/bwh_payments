@@ -174,10 +174,10 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 
 		status, message, refund_id = read_telr_auth_response(response)
 		if status != "A":
-			self.log_request(endpoint, output=response, error=message)
+			self.log_request(endpoint, output={"status": status}, error=message)
 			frappe.throw(_("Telr refused the refund: {0}").format(message or _("unknown error")))
 
-		self.log_request(endpoint, output=response)
+		self.log_request(endpoint, output={"status": status, "refund_id": refund_id})
 		return {"refund_id": refund_id, "status": "succeeded", "amount": flt(amount)}
 
 	def build_refund_request(
@@ -208,10 +208,10 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 
 		# Telr answers 200 on failure too, so the body has to be inspected.
 		if error := response.get("error"):
-			self.log_request(endpoint, output=response, error=error.get("note") or error.get("message"))
+			self.log_request(endpoint, error=error.get("note") or error.get("message"))
 			frappe.throw(_("Telr rejected the request: {0}").format(error.get("message")))
 
-		self.log_request(endpoint, output=response)
+		self.log_request(endpoint, output=summarise_telr_order(response))
 		return response
 
 	def log_request(self, endpoint: str, output=None, error=None):
@@ -226,6 +226,12 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 			error=error,
 			status="Failed" if error else "Completed",
 		)
+
+
+def summarise_telr_order(response) -> dict:
+	"""Telr's order payloads echo the shopper's name, email and address, so only the ids are logged."""
+	order = (response or {}).get("order") or {}
+	return {"order_ref": order.get("ref"), "status": (order.get("status") or {}).get("text")}
 
 
 def read_telr_auth_response(response) -> tuple[str | None, str | None, str | None]:
