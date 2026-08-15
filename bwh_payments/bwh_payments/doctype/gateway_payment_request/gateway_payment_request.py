@@ -5,7 +5,7 @@ import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log
 from frappe.model.document import Document
-from frappe.utils.data import flt
+from frappe.utils.data import cstr, flt
 
 from bwh_payments.currency import get_minor_unit_exponent
 
@@ -263,11 +263,14 @@ def get_original_payment_entry(payment_entry: str | int) -> str:
 
 	Cancelling and amending re-issues the entry under a new name, so keying the refund ledger on the
 	current name lets the same refund reach the gateway again for every amendment.
+
+	Returns a string: the ledger is a comma-joined field, so an autoincrement-named `int` would never
+	compare equal to the entry already recorded in it.
 	"""
 	name = payment_entry
 	while amended_from := frappe.db.get_value("Payment Entry", name, "amended_from"):
 		name = amended_from
-	return name
+	return cstr(name)
 
 
 def refund_on_payment_entry(doc, method=None):
