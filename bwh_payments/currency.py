@@ -9,6 +9,7 @@ from frappe.utils.data import cint, flt
 MINOR_UNIT_EXPONENTS = {
 	"BHD": 3,
 	"BIF": 0,
+	"CLF": 4,
 	"CLP": 0,
 	"DJF": 0,
 	"GNF": 0,
@@ -26,6 +27,7 @@ MINOR_UNIT_EXPONENTS = {
 	"TND": 3,
 	"UGX": 0,
 	"UYI": 0,
+	"UYW": 4,
 	"VND": 0,
 	"VUV": 0,
 	"XAF": 0,
