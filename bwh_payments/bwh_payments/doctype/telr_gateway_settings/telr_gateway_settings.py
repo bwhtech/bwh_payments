@@ -24,13 +24,17 @@ TELR_BASE_URL = "https://secure.telr.com"
 TELR_STATUS_MAP = {
 	"paid": "Paid",
 	"pending": "Pending",
-	"authorised": "Pending",
-	"authorized": "Pending",
 	"declined": "Not Paid",
 	"cancelled": "Cancelled",
 	"canceled": "Cancelled",
 	"expired": "Expired",
 }
+
+# Whether an authorisation is money in the bank depends on how the Telr store is set up, and Telr does not
+# report which. `ecom` authorises and captures together, so leaving these Pending strands paid orders
+# forever; an authorise-only store settles later, so calling them Paid ships goods against uncaptured
+# funds. Hence the per-store switch, defaulting to the safe side.
+TELR_AUTHORISED_STATUSES = ("authorised", "authorized")
 
 
 class TelrGatewaySettings(Document, PaymentGatewayBase):
@@ -51,6 +55,7 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		remote_auth_key: DF.Password | None
 		store_id: DF.Data
 		test_mode: DF.Check
+		treat_authorised_as_paid: DF.Check
 	# end: auto-generated types
 
 	def get_gateway_name(self) -> str:
@@ -139,6 +144,8 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 	def get_payment_status(self, session_id: str) -> str:
 		order = self.get_order(session_id)
 		status_text = ((order.get("status") or {}).get("text") or "").strip().casefold()
+		if status_text in TELR_AUTHORISED_STATUSES:
+			return "Paid" if self.treat_authorised_as_paid else "Pending"
 		return TELR_STATUS_MAP.get(status_text, "Pending")
 
 	def get_transaction_reference(self, session_id: str) -> str:

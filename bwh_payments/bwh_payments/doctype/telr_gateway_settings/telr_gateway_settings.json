@@ -8,6 +8,7 @@
   "enabled",
   "column_break_mode",
   "test_mode",
+  "treat_authorised_as_paid",
   "section_break_store",
   "store_id",
   "currency",
@@ -37,6 +38,13 @@
    "fieldname": "test_mode",
    "fieldtype": "Check",
    "label": "Test Mode"
+  },
+  {
+   "default": "0",
+   "description": "Telr's <b>ecom</b> transaction class authorises and captures in one step, so an Authorised order has already been charged. Only turn this on if your Telr store is configured that way \u2014 with an authorise-only store it would release goods against funds that were never captured.",
+   "fieldname": "treat_authorised_as_paid",
+   "fieldtype": "Check",
+   "label": "Treat Authorised As Paid"
   },
   {
    "fieldname": "section_break_store",
