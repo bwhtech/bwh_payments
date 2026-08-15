@@ -99,6 +99,26 @@ class TestWebhook(IntegrationTestCase):
 		self.assertEqual(response["status"], "error")
 		self.assertEqual(self.get_status_code(), 400)
 
+	def test_every_verification_failure_answers_with_the_same_opaque_400(self):
+		"""Distinguishable replies let an unauthenticated caller enumerate the configured gateways."""
+		payload = build_checkout_completed_event("cs_test_nothing")
+
+		unknown_gateway = self.post_webhook("Not A Gateway", payload, None)
+		unsigned = self.post_webhook(GATEWAY, payload, None)
+		forged = self.post_webhook(GATEWAY, payload, sign_stripe_payload(payload, "whsec_attacker_guess"))
+
+		self.assertEqual(unknown_gateway, unsigned)
+		self.assertEqual(unsigned, forged)
+		self.assertEqual(self.get_status_code(), 400)
+
+	def test_a_rejection_does_not_echo_the_gateway_error_back_to_the_caller(self):
+		"""frappe.throw inside a gateway verifier lands in _server_messages unless the log is cleared."""
+		payload = build_checkout_completed_event("cs_test_nothing")
+
+		self.post_webhook(GATEWAY, payload, None)
+
+		self.assertEqual(frappe.local.message_log, [])
+
 	def test_a_replayed_delivery_is_accepted_but_applied_once(self):
 		payment_request = make_payment_request(100, "SAR")
 		payload = build_checkout_completed_event(payment_request.order_ref, event_id="evt_replay")
