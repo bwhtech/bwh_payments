@@ -4,8 +4,10 @@ from abc import ABC, abstractmethod
 class PaymentGatewayBase(ABC):
 	"""Contract every `<Gateway> Gateway Settings` Single must satisfy to back a Payment Gateway Profile.
 
-	All amounts crossing this boundary are in MAJOR units (12.34, not 1234); each gateway converts to its
-	own minor units with `bwh_payments.currency.to_minor_units` so charge and refund always agree.
+	All amounts crossing this boundary are in MAJOR units (12.34, not 1234). What each gateway does with
+	them is its own business: Stripe converts to ISO minor units with `bwh_payments.currency.to_minor_units`,
+	while Telr bills in major units and only uses the currency's minor-unit exponent to decide how many
+	decimals to send. Either way charge and refund go through the same conversion, so they always agree.
 	"""
 
 	@abstractmethod
