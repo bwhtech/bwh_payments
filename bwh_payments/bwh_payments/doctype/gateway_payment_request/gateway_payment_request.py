@@ -9,10 +9,6 @@ from frappe.utils.data import flt
 
 from bwh_payments.currency import get_minor_unit_exponent
 
-# grand_total vs rounded_total rounding in ERPNext can leave a sub-unit unrefunded remainder on a full
-# return; treat that as fully Refunded. Only relabels the status — never changes the amount, so no over-refund.
-REFUND_ROUNDING_TOLERANCE = 1.0
-
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
 WEBHOOK_WRITABLE_STATUSES = ("Paid", "Not Paid", "Cancelled", "Expired")
 
@@ -123,14 +119,30 @@ class GatewayPaymentRequest(Document):
 	def sync_status(self):
 		"""Re-read the authoritative status from the gateway. Never trust a browser redirect."""
 		status = self.get_gateway_settings().get_payment_status(self.order_ref)
+
+		# The gateway round-trip is slow, so the lock is taken after it and picks up whatever a webhook
+		# committed meanwhile. Without it this save races that webhook into a TimestampMismatchError,
+		# which the shopper sees as a 500 on the confirmation page.
+		self.lock_refund_ledger()
+
 		if flt(self.refund_amount) > 0:
 			status = self.resolve_refund_status()
+		elif self.status != "Pending" or status not in WEBHOOK_WRITABLE_STATUSES:
+			return
+
 		self.status = status
 		self.save(ignore_permissions=True)
 
+	def get_remaining_refundable_amount(self) -> float:
+		# Refund arithmetic is pinned to the currency's own minor unit, not the field precision, so a
+		# full refund always adds up to exactly what was charged.
+		precision = get_minor_unit_exponent(self.currency_code)
+		return flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
+
 	def resolve_refund_status(self) -> str:
-		remaining = flt(self.amount) - flt(self.refund_amount)
-		if remaining < REFUND_ROUNDING_TOLERANCE:
+		# Anything at or above one minor unit is still real money the shopper is owed, and relabelling the
+		# row Refunded would drop it out of REFUNDABLE_STATUSES and strand it forever.
+		if self.get_remaining_refundable_amount() < 10 ** -get_minor_unit_exponent(self.currency_code):
 			return "Refunded"
 		return "Partially Refunded"
 
@@ -158,14 +170,16 @@ class GatewayPaymentRequest(Document):
 				title=_("Refund Not Allowed"),
 			)
 
+		if payment_entry:
+			payment_entry = get_original_payment_entry(payment_entry)
 		if payment_entry and payment_entry in self.get_refunded_payment_entries():
 			return self.get_refund_ledger()
 
-		# Refund arithmetic is pinned to the currency's own minor unit, not the field precision, so a
-		# full refund always adds up to exactly what was charged.
 		precision = get_minor_unit_exponent(self.currency_code)
-		remaining = flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
-		amount = flt(amount, precision) or remaining
+		remaining = self.get_remaining_refundable_amount()
+		# `flt(amount, precision) or remaining` refunded the whole balance for any sub-minor request,
+		# because flt(0.004, 2) is falsy. Only an omitted amount may mean "everything left".
+		amount = remaining if amount is None else flt(amount, precision)
 
 		if amount <= 0:
 			frappe.throw(_("Refund amount must be greater than zero"))
@@ -244,6 +258,18 @@ class GatewayPaymentRequest(Document):
 		return True
 
 
+def get_original_payment_entry(payment_entry: str | int) -> str:
+	"""Walk a Payment Entry back to the one it was first amended from.
+
+	Cancelling and amending re-issues the entry under a new name, so keying the refund ledger on the
+	current name lets the same refund reach the gateway again for every amendment.
+	"""
+	name = payment_entry
+	while amended_from := frappe.db.get_value("Payment Entry", name, "amended_from"):
+		name = amended_from
+	return name
+
+
 def refund_on_payment_entry(doc, method=None):
 	"""Mirror an outgoing refund Payment Entry back to the gateway that took the money."""
 	if doc.payment_type != "Pay" or not doc.reference_no:
@@ -259,8 +285,9 @@ def refund_on_payment_entry(doc, method=None):
 
 	payment_request = frappe.get_doc("Gateway Payment Request", request_name)
 	# A supplier payment can carry any reference string; only refund when the Payment Entry was actually
-	# settled through this gateway's Mode of Payment.
-	if doc.mode_of_payment and doc.mode_of_payment != payment_request.gateway:
+	# settled through this gateway's Mode of Payment. A blank mode is not a match — treating it as one
+	# refunds real money off nothing more than a coincidental reference_no.
+	if doc.mode_of_payment != payment_request.gateway:
 		return
 
 	payment_request.refund(flt(doc.paid_amount), payment_entry=doc.name)
