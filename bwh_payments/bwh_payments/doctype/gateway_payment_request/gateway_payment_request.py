@@ -159,7 +159,7 @@ class GatewayPaymentRequest(Document):
 			)
 
 		if payment_entry and payment_entry in self.get_refunded_payment_entries():
-			return
+			return self.get_refund_ledger()
 
 		# Refund arithmetic is pinned to the currency's own minor unit, not the field precision, so a
 		# full refund always adds up to exactly what was charged.
@@ -205,6 +205,9 @@ class GatewayPaymentRequest(Document):
 		self.save(ignore_permissions=True)
 
 		request_log.db_set("status", "Completed", update_modified=False)
+		return self.get_refund_ledger()
+
+	def get_refund_ledger(self) -> dict:
 		return {"refund_amount": self.refund_amount, "status": self.status, "refund_id": self.refund_id}
 
 	def append_refund_id(self, refund_id: str | None):
@@ -237,7 +240,6 @@ class GatewayPaymentRequest(Document):
 
 		self.status = status
 		self.last_webhook_event_id = event_id
-		self.flags.from_webhook = True
 		self.save(ignore_permissions=True)
 		return True
 
