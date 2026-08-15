@@ -132,8 +132,33 @@ class GatewayPaymentRequest(Document):
 			return "Refunded"
 		return "Partially Refunded"
 
+	def lock_refund_ledger(self):
+		"""Take a row lock and refresh from it, so the over-refund guard cannot read a stale ledger.
+
+		Without this two concurrent refunds both read refund_amount = 0, both pass the guard and both
+		reach the gateway. The lock is held until the enclosing transaction commits.
+		"""
+		frappe.db.get_value(
+			"Gateway Payment Request",
+			self.name,
+			["amount", "refund_amount", "status"],
+			for_update=True,
+		)
+		self.reload()
+
 	@frappe.whitelist()
 	def refund(self, amount: float | None = None, payment_entry: str | None = None):
+		self.lock_refund_ledger()
+
+		if self.status not in REFUNDABLE_STATUSES:
+			frappe.throw(
+				_("Cannot refund a payment in status {0}").format(frappe.bold(_(self.status))),
+				title=_("Refund Not Allowed"),
+			)
+
+		if payment_entry and payment_entry in self.get_refunded_payment_entries():
+			return
+
 		# Refund arithmetic is pinned to the currency's own minor unit, not the field precision, so a
 		# full refund always adds up to exactly what was charged.
 		precision = get_minor_unit_exponent(self.currency_code)
@@ -223,4 +248,9 @@ def refund_on_payment_entry(doc, method=None):
 		return
 
 	payment_request = frappe.get_doc("Gateway Payment Request", request_name)
-	payment_request.refund(flt(doc.paid_amount))
+	# A supplier payment can carry any reference string; only refund when the Payment Entry was actually
+	# settled through this gateway's Mode of Payment.
+	if doc.mode_of_payment and doc.mode_of_payment != payment_request.gateway:
+		return
+
+	payment_request.refund(flt(doc.paid_amount), payment_entry=doc.name)
