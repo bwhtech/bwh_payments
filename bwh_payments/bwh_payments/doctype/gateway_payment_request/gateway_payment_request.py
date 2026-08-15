@@ -1,0 +1,200 @@
+# Copyright (c) 2026, Build With Hussain and contributors
+# For license information, please see license.txt
+
+import frappe
+from frappe import _
+from frappe.integrations.utils import create_request_log
+from frappe.model.document import Document
+from frappe.utils.data import flt
+
+# grand_total vs rounded_total rounding in ERPNext can leave a sub-unit unrefunded remainder on a full
+# return; treat that as fully Refunded. Only relabels the status — never changes the amount, so no over-refund.
+REFUND_ROUNDING_TOLERANCE = 1.0
+
+REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
+WEBHOOK_WRITABLE_STATUSES = ("Paid", "Not Paid", "Cancelled", "Expired")
+
+
+class GatewayPaymentRequest(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		amount: DF.Currency
+		cancel_url: DF.Data | None
+		company: DF.Link | None
+		currency_code: DF.Link
+		customer_address: DF.Link | None
+		customer_email: DF.Data | None
+		customer_forenames: DF.Data | None
+		customer_phone: DF.Data | None
+		customer_ref: DF.Link | None
+		customer_surname: DF.Data | None
+		erpnext_payment_request: DF.Link | None
+		failure_url: DF.Data | None
+		gateway: DF.Link
+		gateway_transaction_ref: DF.Data | None
+		last_webhook_event_id: DF.Data | None
+		order_ref: DF.Data | None
+		order_url: DF.SmallText | None
+		ref_docname: DF.DynamicLink
+		ref_doctype: DF.Link
+		refund_amount: DF.Currency
+		refund_id: DF.SmallText | None
+		refund_payment_entries: DF.SmallText | None
+		status: DF.Literal[
+			"Pending", "Paid", "Not Paid", "Cancelled", "Expired", "Partially Refunded", "Refunded"
+		]
+		success_url: DF.Data | None
+	# end: auto-generated types
+
+	def before_save(self):
+		if not self.order_ref:
+			self.create_session()
+
+	def get_gateway_settings(self):
+		gateway_settings = frappe.get_cached_value("Payment Gateway Profile", self.gateway, "gateway_settings")
+		return frappe.get_single(gateway_settings)
+
+	def create_session(self):
+		session = self.get_gateway_settings().create_session(
+			flt(self.amount),
+			self.currency_code,
+			reference=self.name,
+			customer=self.get_customer_details(),
+		)
+		self.order_ref = session.get("session_id")
+		self.order_url = session.get("redirect_url")
+		self.success_url = session.get("success_url")
+		self.cancel_url = session.get("cancel_url")
+		self.failure_url = session.get("failure_url")
+
+	def get_customer_details(self) -> dict:
+		address = None
+		if self.customer_address:
+			address_doc = frappe.get_cached_doc("Address", self.customer_address)
+			address = {
+				"line1": address_doc.address_line1,
+				"city": address_doc.city,
+				"country": address_doc.country,
+			}
+		return {
+			"ref": self.customer_ref or "",
+			"email": self.customer_email or "",
+			"phone": self.customer_phone or "",
+			"name": {
+				"forenames": self.customer_forenames or "",
+				"surname": self.customer_surname or "",
+			},
+			"address": address,
+		}
+
+	@frappe.whitelist()
+	def sync_status(self):
+		"""Re-read the authoritative status from the gateway. Never trust a browser redirect."""
+		status = self.get_gateway_settings().get_payment_status(self.order_ref)
+		if flt(self.refund_amount) > 0:
+			status = self.resolve_refund_status()
+		self.status = status
+		self.save(ignore_permissions=True)
+
+	def resolve_refund_status(self) -> str:
+		remaining = flt(self.amount) - flt(self.refund_amount)
+		if remaining < REFUND_ROUNDING_TOLERANCE:
+			return "Refunded"
+		return "Partially Refunded"
+
+	@frappe.whitelist()
+	def refund(self, amount: float | None = None, payment_entry: str | None = None):
+		precision = self.precision("refund_amount")
+		remaining = flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
+		amount = flt(amount, precision) or remaining
+
+		if amount <= 0:
+			frappe.throw(_("Refund amount must be greater than zero"))
+		if amount > remaining:
+			frappe.throw(
+				_("Refund amount ({0}) exceeds the remaining refundable amount ({1})").format(
+					amount, remaining
+				)
+			)
+
+		# ponytail: the intent log shares this transaction, so a crash between the gateway call and the
+		# commit still loses the record; reconcile from the storefront Orphaned Payments report. Committing
+		# it first would release the row lock above and re-open the double-refund window.
+		request_log = create_request_log(
+			{
+				"gateway_payment_request": self.name,
+				"order_ref": self.order_ref,
+				"amount": amount,
+				"currency": self.currency_code,
+			},
+			service_name=f"{self.gateway} Refund",
+			reference_doctype=self.doctype,
+			reference_docname=self.name,
+		)
+
+		try:
+			result = self.get_gateway_settings().refund_payment(
+				self.order_ref, amount, self.currency_code
+			)
+		except Exception:
+			request_log.db_set("status", "Failed", update_modified=False)
+			raise
+
+		self.append_refund_id((result or {}).get("refund_id"))
+		self.refund_amount = flt(flt(self.refund_amount, precision) + amount, precision)
+		self.status = self.resolve_refund_status()
+		if payment_entry:
+			self.append_refunded_payment_entry(payment_entry)
+		self.save(ignore_permissions=True)
+
+		request_log.db_set("status", "Completed", update_modified=False)
+		return {"refund_amount": self.refund_amount, "status": self.status, "refund_id": self.refund_id}
+
+	def append_refund_id(self, refund_id: str | None):
+		# Repeated partial refunds each return a distinct id, so append rather than overwrite — the ids are
+		# the only way to reconcile against a gateway statement.
+		if not refund_id:
+			return
+		existing_ids = [entry for entry in (self.refund_id or "").split(",") if entry]
+		existing_ids.append(refund_id)
+		self.refund_id = ",".join(existing_ids)
+
+	def get_refunded_payment_entries(self) -> list[str]:
+		return [entry for entry in (self.refund_payment_entries or "").split(",") if entry]
+
+	def append_refunded_payment_entry(self, payment_entry: str):
+		entries = self.get_refunded_payment_entries()
+		entries.append(payment_entry)
+		self.refund_payment_entries = ",".join(entries)
+
+	def apply_webhook_status(self, status: str, event_id: str | None = None) -> bool:
+		if self.status != "Pending":
+			return False
+
+		self.status = status
+		self.flags.from_webhook = True
+		self.save(ignore_permissions=True)
+		return True
+
+
+def refund_on_payment_entry(doc, method=None):
+	"""Mirror an outgoing refund Payment Entry back to the gateway that took the money."""
+	if doc.payment_type != "Pay" or not doc.reference_no:
+		return
+
+	request_name = frappe.db.get_value(
+		"Gateway Payment Request",
+		{"order_ref": doc.reference_no, "status": ["in", REFUNDABLE_STATUSES]},
+		"name",
+	)
+	if not request_name:
+		return
+
+	payment_request = frappe.get_doc("Gateway Payment Request", request_name)
+	payment_request.refund(flt(doc.paid_amount))
