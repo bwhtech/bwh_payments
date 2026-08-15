@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import time
+from typing import ClassVar
 
 import frappe
 from frappe import _dict
@@ -20,9 +21,9 @@ class FakeStripeSession(_dict):
 class FakeStripeClient:
 	"""Records what the controller sent so a test can assert on the exact minor-unit amount."""
 
-	created_sessions: list[dict] = []
-	created_refunds: list[dict] = []
-	sessions: dict[str, dict] = {}
+	created_sessions: ClassVar[list[dict]] = []
+	created_refunds: ClassVar[list[dict]] = []
+	sessions: ClassVar[dict[str, dict]] = {}
 	next_refund_status = "succeeded"
 	refund_counter = 0
 

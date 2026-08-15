@@ -112,7 +112,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		charged = FakeStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
 		self.assertEqual(charged, 1000)
-		self.assertNotEqual(charged, int(1000 * 100))
+		self.assertNotEqual(charged, 1000 * 100)
 
 	def test_success_url_keeps_the_stripe_placeholder_and_existing_query(self):
 		settings = frappe.get_single("Stripe Gateway Settings")
