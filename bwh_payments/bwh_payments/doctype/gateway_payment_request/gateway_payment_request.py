@@ -7,6 +7,8 @@ from frappe.integrations.utils import create_request_log
 from frappe.model.document import Document
 from frappe.utils.data import flt
 
+from bwh_payments.currency import get_minor_unit_exponent
+
 # grand_total vs rounded_total rounding in ERPNext can leave a sub-unit unrefunded remainder on a full
 # return; treat that as fully Refunded. Only relabels the status — never changes the amount, so no over-refund.
 REFUND_ROUNDING_TOLERANCE = 1.0
@@ -51,6 +53,28 @@ class GatewayPaymentRequest(Document):
 		]
 		success_url: DF.Data | None
 	# end: auto-generated types
+
+	def validate(self):
+		self.validate_amount_precision()
+
+	def validate_amount_precision(self):
+		"""Refuse a charge the document cannot store exactly, rather than quietly rounding it.
+
+		Frappe derives a Currency field's precision from the site's default number format unless
+		System Settings has `use_number_format_from_currency` on, so on a default site a 3-decimal
+		currency such as KWD is rounded to 2 and the shopper is billed a different figure.
+		"""
+		exponent = get_minor_unit_exponent(self.currency_code)
+		if flt(self.amount, self.precision("amount")) == flt(self.amount, exponent):
+			return
+
+		frappe.throw(
+			_(
+				"{0} amounts carry {1} decimals but this site stores currency to {2}. Enable"
+				" <b>Use Number Format From Currency</b> in System Settings before taking {0} payments."
+			).format(frappe.bold(self.currency_code), exponent, self.precision("amount")),
+			title=_("Currency Precision Too Low"),
+		)
 
 	def before_save(self):
 		if not self.order_ref:
@@ -110,7 +134,9 @@ class GatewayPaymentRequest(Document):
 
 	@frappe.whitelist()
 	def refund(self, amount: float | None = None, payment_entry: str | None = None):
-		precision = self.precision("refund_amount")
+		# Refund arithmetic is pinned to the currency's own minor unit, not the field precision, so a
+		# full refund always adds up to exactly what was charged.
+		precision = get_minor_unit_exponent(self.currency_code)
 		remaining = flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
 		amount = flt(amount, precision) or remaining
 
