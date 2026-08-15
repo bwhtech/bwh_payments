@@ -81,7 +81,9 @@ class GatewayPaymentRequest(Document):
 			self.create_session()
 
 	def get_gateway_settings(self):
-		gateway_settings = frappe.get_cached_value("Payment Gateway Profile", self.gateway, "gateway_settings")
+		gateway_settings = frappe.get_cached_value(
+			"Payment Gateway Profile", self.gateway, "gateway_settings"
+		)
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
@@ -190,9 +192,7 @@ class GatewayPaymentRequest(Document):
 		)
 
 		try:
-			result = self.get_gateway_settings().refund_payment(
-				self.order_ref, amount, self.currency_code
-			)
+			result = self.get_gateway_settings().refund_payment(self.order_ref, amount, self.currency_code)
 		except Exception:
 			request_log.db_set("status", "Failed", update_modified=False)
 			raise
