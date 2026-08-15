@@ -7,6 +7,7 @@ from frappe.model.document import Document
 from payments.utils import create_payment_gateway
 
 from bwh_payments.base_class import PaymentGatewayBase
+from bwh_payments.bwh_payments.utils import get_available_payment_modes
 
 
 class PaymentGatewayProfile(Document):
@@ -39,6 +40,10 @@ class PaymentGatewayProfile(Document):
 		create_payment_gateway(self.name, settings=self.gateway_settings)
 		if not self.payment_gateway:
 			self.db_set("payment_gateway", self.name, update_modified=False)
+		get_available_payment_modes.clear_cache()
+
+	def on_trash(self):
+		get_available_payment_modes.clear_cache()
 
 	def get_controller(self) -> PaymentGatewayBase:
 		return frappe.get_single(self.gateway_settings)
