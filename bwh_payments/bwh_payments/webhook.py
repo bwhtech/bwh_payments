@@ -12,13 +12,13 @@ def handle():
 	"""Public gateway callback. Everything here is untrusted until the gateway's own signature clears it."""
 	gateway = frappe.request.args.get("gateway")
 	if not gateway:
-		return reject(_("Gateway parameter is required"))
+		return reject()
 
 	profile = frappe.db.get_value(
 		"Payment Gateway Profile", gateway, ["name", "enabled", "gateway_settings"], as_dict=True
 	)
 	if not profile or not profile.enabled:
-		return reject(_("Unknown or disabled gateway"))
+		return reject()
 
 	payload = frappe.request.get_data()
 	headers = dict(frappe.request.headers)
@@ -29,7 +29,7 @@ def handle():
 		# The payload can carry cardholder data, so only the gateway and the traceback are recorded.
 		frappe.log_error(title=f"{gateway} webhook verification failed")
 		log_webhook(gateway, status="Failed")
-		return reject(_("Webhook could not be verified"))
+		return reject()
 
 	if not result:
 		log_webhook(gateway, status="Completed")
@@ -55,7 +55,7 @@ def handle():
 			message=f"URL gateway: {gateway}, request gateway: {payment_request.gateway}",
 		)
 		log_webhook(gateway, session_id=session_id, event_id=event_id, status="Failed")
-		return reject(_("Gateway mismatch"))
+		return reject()
 
 	apply_status_as_administrator(payment_request, status, event_id)
 	log_webhook(gateway, session_id=session_id, event_id=event_id, status="Completed")
@@ -75,9 +75,17 @@ def apply_status_as_administrator(payment_request, status: str, event_id: str | 
 		frappe.set_user(session_user)
 
 
-def reject(message: str) -> dict:
+def reject() -> dict:
+	"""One opaque 400 for every verification failure.
+
+	A caller who can tell "unknown gateway" from "bad signature" apart can enumerate which gateways this
+	site has configured and probe how far a forged payload gets. The detail stays in the Error Log and the
+	Integration Request. Clearing the message log stops a `frappe.throw` raised inside a gateway's
+	verifier from being echoed back to the caller in `_server_messages`.
+	"""
+	frappe.local.message_log = []
 	frappe.local.response["http_status_code"] = 400
-	return {"status": "error", "message": message}
+	return {"status": "error", "message": _("Webhook could not be verified")}
 
 
 def log_webhook(gateway: str, session_id: str | None = None, event_id: str | None = None, status="Queued"):
