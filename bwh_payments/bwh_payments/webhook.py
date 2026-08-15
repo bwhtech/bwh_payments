@@ -37,7 +37,7 @@ def handle():
 
 	session_id = result.get("session_id")
 	status = result.get("status")
-	event_id = None
+	event_id = result.get("event_id")
 
 	if not (session_id and status):
 		log_webhook(gateway, event_id=event_id, status="Failed")

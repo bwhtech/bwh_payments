@@ -118,6 +118,7 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		return {
 			"session_id": session["id"],
 			"status": "Paid" if session["payment_status"] == "paid" else "Pending",
+			"event_id": event["id"],
 		}
 
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> dict:

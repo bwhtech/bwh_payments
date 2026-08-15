@@ -225,10 +225,18 @@ class GatewayPaymentRequest(Document):
 		self.refund_payment_entries = ",".join(entries)
 
 	def apply_webhook_status(self, status: str, event_id: str | None = None) -> bool:
+		"""Apply a verified gateway status. Return False when the event is a replay or not applicable."""
+		self.lock_refund_ledger()
+
+		if event_id and self.last_webhook_event_id == event_id:
+			return False
 		if self.status != "Pending":
+			return False
+		if status not in WEBHOOK_WRITABLE_STATUSES:
 			return False
 
 		self.status = status
+		self.last_webhook_event_id = event_id
 		self.flags.from_webhook = True
 		self.save(ignore_permissions=True)
 		return True
