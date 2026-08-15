@@ -138,3 +138,112 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(FakeStripeClient.created_refunds[-1]["amount"], charged)
 		self.assertEqual(to_minor_units(payment_request.refund_amount, "KWD"), charged)
 		self.assertEqual(payment_request.status, "Refunded")
+
+	def test_refund_guard_reads_the_locked_ledger_not_the_in_memory_copy(self):
+		"""A stale in-memory refund_amount is exactly how two concurrent refunds both pass the guard."""
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		# Stand in for a refund committed by another request after this document was loaded.
+		frappe.db.set_value(
+			"Gateway Payment Request", payment_request.name, "refund_amount", 100, update_modified=False
+		)
+		self.assertEqual(flt(payment_request.refund_amount), 0.0)
+
+		with self.assertRaises(frappe.ValidationError):
+			payment_request.refund(100)
+
+		self.assertEqual(FakeStripeClient.created_refunds, [])
+
+	def test_refund_id_is_appended_once_per_successful_partial(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		payment_request.refund(30)
+		payment_request.refund(30)
+		payment_request.refund(30)
+
+		self.assertEqual(len(payment_request.refund_id.split(",")), 3)
+		self.assertEqual(len(set(payment_request.refund_id.split(","))), 3)
+		self.assertEqual(flt(payment_request.refund_amount), 90.0)
+		self.assertEqual(payment_request.status, "Partially Refunded")
+
+	def test_over_refund_is_rejected_and_never_reaches_the_gateway(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		payment_request.refund(60)
+		FakeStripeClient.created_refunds.clear()
+
+		with self.assertRaises(frappe.ValidationError):
+			payment_request.refund(41)
+
+		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(flt(payment_request.refund_amount), 60.0)
+
+	def test_refund_defaults_to_the_whole_remaining_balance(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		payment_request.refund(40)
+
+		payment_request.refund()
+
+		self.assertEqual(flt(payment_request.refund_amount), 100.0)
+		self.assertEqual(payment_request.status, "Refunded")
+
+	def test_sub_unit_rounding_residue_still_counts_as_fully_refunded(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		payment_request.refund(99.01)
+
+		self.assertEqual(payment_request.status, "Refunded")
+
+	def test_a_whole_unit_left_is_still_only_partially_refunded(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		payment_request.refund(99)
+
+		self.assertEqual(payment_request.status, "Partially Refunded")
+
+	def test_refund_rejected_while_the_payment_is_still_pending(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		with self.assertRaises(frappe.ValidationError):
+			payment_request.refund(10)
+
+		self.assertEqual(FakeStripeClient.created_refunds, [])
+
+	def test_a_failed_gateway_refund_leaves_the_ledger_untouched(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		FakeStripeClient.next_refund_status = "failed"
+
+		with self.assertRaises(frappe.ValidationError):
+			payment_request.refund(50)
+
+		payment_request.reload()
+		self.assertEqual(flt(payment_request.refund_amount), 0.0)
+		self.assertIsNone(payment_request.refund_id)
+
+	# --- webhook status ---------------------------------------------------
+
+	def test_order_ref_is_unique(self):
+		first = make_payment_request(100, "SAR")
+
+		with self.assertRaises(frappe.UniqueValidationError):
+			frappe.get_doc(
+				{
+					"doctype": "Gateway Payment Request",
+					"gateway": GATEWAY,
+					"amount": 100,
+					"currency_code": "SAR",
+					"ref_doctype": "Currency",
+					"ref_docname": "SAR",
+					"order_ref": first.order_ref,
+				}
+			).insert(ignore_permissions=True)
+
+	def test_gateway_payment_request_is_not_submittable(self):
+		# A submittable refund ledger can be amended into a second copy and double-count refunds.
+		self.assertFalse(frappe.get_meta("Gateway Payment Request").is_submittable)
