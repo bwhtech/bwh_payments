@@ -1,13 +1,16 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # For license information, please see license.txt
 
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 import frappe
 import stripe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils.data import cint, flt
+from frappe.utils.data import flt
 
 from bwh_payments.base_class import PaymentGatewayBase
+from bwh_payments.currency import from_minor_units, to_minor_units
 
 # Stripe substitutes this itself on redirect, so it has to survive URL encoding intact.
 STRIPE_SESSION_ID_PLACEHOLDER = "{CHECKOUT_SESSION_ID}"
@@ -61,7 +64,7 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 						"price_data": {
 							"currency": currency.lower(),
 							"product_data": {"name": _("Order Payment")},
-							"unit_amount": cint(amount * 100),
+							"unit_amount": to_minor_units(amount, currency),
 						},
 						"quantity": 1,
 					}
@@ -79,7 +82,15 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		}
 
 	def build_success_url(self) -> str:
-		return f"{self.success_url}?session_id={STRIPE_SESSION_ID_PLACEHOLDER}"
+		# String-concatenating "?session_id=..." breaks any success URL that already carries a query.
+		if not self.success_url:
+			frappe.throw(_("Please set a Success URL in Stripe Gateway Settings"))
+		parts = urlsplit(self.success_url)
+		encoded_query = urlencode(parse_qsl(parts.query))
+		if encoded_query:
+			encoded_query += "&"
+		encoded_query += f"session_id={STRIPE_SESSION_ID_PLACEHOLDER}"
+		return urlunsplit((parts.scheme, parts.netloc, parts.path, encoded_query, parts.fragment))
 
 	def get_payment_status(self, session_id: str) -> str:
 		session = self.get_client().checkout.sessions.retrieve(session_id)
@@ -120,7 +131,7 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		refund = client.refunds.create(
 			{
 				"payment_intent": session.payment_intent,
-				"amount": int(amount * 100),
+				"amount": to_minor_units(amount, currency),
 			}
 		)
 
@@ -130,5 +141,5 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		return {
 			"refund_id": refund.id,
 			"status": refund.status,
-			"amount": flt(refund.amount / 100),
+			"amount": flt(from_minor_units(refund.amount, currency)),
 		}
