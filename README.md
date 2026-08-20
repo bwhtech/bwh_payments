@@ -1,7 +1,7 @@
 ## BWH Payments
 
-Hosted-checkout payment gateway integrations for Frappe/ERPNext. Ships Stripe and Telr, and a contract
-any further gateway can implement.
+Hosted-checkout payment gateway integrations for Frappe/ERPNext. Ships Stripe, Telr, Razorpay and Tabby,
+and a contract any further gateway can implement.
 
 ### What it is
 
@@ -16,6 +16,8 @@ owns that half.
 | `Gateway Payment Request` | One shopper payment: session id, status, refund ledger. Not submittable. `order_ref` is unique. |
 | `Stripe Gateway Settings` | Stripe credentials and redirect URLs. |
 | `Telr Gateway Settings` | Telr credentials and return URLs. |
+| `Razorpay Gateway Settings` | Razorpay credentials, webhook secret and redirect URLs. Hosted checkout runs on Razorpay Payment Links. |
+| `Tabby Gateway Settings` | Tabby (BNPL, MENA) credentials, webhook token, source-IP allowlist and redirect URLs. |
 
 ### Setup
 
@@ -34,6 +36,20 @@ Frappe derives a Currency field's precision from the **site's** default number f
 Settings has **Use Number Format From Currency** enabled. Without it a 12.345 KWD charge is stored as
 12.35 and the shopper is billed a different figure, so `Gateway Payment Request` refuses the charge
 rather than round it. Turn that setting on before taking payments in a 3-decimal currency.
+
+### Tabby
+
+Tabby is buy-now-pay-later, so a checkout can be **refused** — the shopper is told to pick another method
+rather than shown an error. A merchant code is tied to one currency (SAR, AED, KWD, BHD or QAR), so a
+multi-currency store needs one `Tabby Gateway Settings`-backed profile per market, which the single
+settings DocType cannot express today.
+
+Tabby does not sign its webhooks: the `X-Webhook-Signature` header is a token **you** choose, register
+with Tabby, and paste into Webhook Secret. The source-IP allowlist is the second line of defence; Tabby
+rotates infrastructure, so it is editable rather than hardcoded.
+
+Tabby authorises and captures separately. `get_payment_status` captures an authorised payment before
+reporting it Paid — without that the shopper is approved and never charged.
 
 ### Adding a gateway
 
