@@ -13,7 +13,7 @@ from frappe.utils.data import flt
 
 from bwh_payments.base_class import PaymentGatewayBase
 from bwh_payments.bwh_payments.utils import get_localised_url
-from bwh_payments.currency import get_minor_unit_exponent
+from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 
 # ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Telr call holds a worker;
 # revisit if Telr latency ever shows up in the request log.
@@ -77,10 +77,6 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		self.log_request(endpoint, output=output)
 		return output
 
-	def validate_transaction_currency(self, currency: str):
-		if not frappe.db.exists("Currency", currency):
-			frappe.throw(_("{0} is not a currency configured on this site").format(frappe.bold(currency)))
-
 	def create_session(
 		self,
 		amount: float,
@@ -89,7 +85,7 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		customer: dict | None = None,
 	) -> dict:
 		currency = currency or self.currency
-		self.validate_transaction_currency(currency)
+		validate_transaction_currency(currency)
 
 		endpoint = f"{TELR_BASE_URL}/gateway/order.json"
 		payload = {

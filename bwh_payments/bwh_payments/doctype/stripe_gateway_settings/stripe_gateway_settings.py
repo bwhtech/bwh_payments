@@ -10,7 +10,7 @@ from frappe.model.document import Document
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import PaymentGatewayBase
-from bwh_payments.currency import from_minor_units, to_minor_units
+from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
 
 # Stripe substitutes this itself on redirect, so it has to survive URL encoding intact.
 STRIPE_SESSION_ID_PLACEHOLDER = "{CHECKOUT_SESSION_ID}"
@@ -42,10 +42,6 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		# level `stripe.api_key` that the SDK otherwise reads.
 		return stripe.StripeClient(self.get_password("private_key"))
 
-	def validate_transaction_currency(self, currency: str):
-		if not frappe.db.exists("Currency", currency):
-			frappe.throw(_("{0} is not a currency configured on this site").format(frappe.bold(currency)))
-
 	def create_session(
 		self,
 		amount: float,
@@ -53,7 +49,7 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		reference: str | None = None,
 		customer: dict | None = None,
 	) -> dict:
-		self.validate_transaction_currency(currency)
+		validate_transaction_currency(currency)
 		session = self.get_client().checkout.sessions.create(
 			{
 				"mode": "payment",

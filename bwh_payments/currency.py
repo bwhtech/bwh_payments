@@ -37,6 +37,11 @@ MINOR_UNIT_EXPONENTS = {
 DEFAULT_MINOR_UNIT_EXPONENT = 2
 
 
+def validate_transaction_currency(currency: str):
+	if not frappe.db.exists("Currency", currency):
+		frappe.throw(_("{0} is not a currency configured on this site").format(frappe.bold(currency)))
+
+
 def get_minor_unit_exponent(currency: str) -> int:
 	if not currency:
 		frappe.throw(_("Currency is required to convert an amount to gateway minor units"))
