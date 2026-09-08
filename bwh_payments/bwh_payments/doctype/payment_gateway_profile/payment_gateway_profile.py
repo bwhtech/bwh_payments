@@ -4,7 +4,6 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from payments.utils import create_payment_gateway
 
 from bwh_payments.base_class import PaymentGatewayBase
 from bwh_payments.bwh_payments.utils import get_available_payment_modes
@@ -21,7 +20,6 @@ class PaymentGatewayProfile(Document):
 
 		enabled: DF.Check
 		gateway_settings: DF.Link
-		payment_gateway: DF.Link | None
 	# end: auto-generated types
 
 	def validate(self):
@@ -35,11 +33,6 @@ class PaymentGatewayProfile(Document):
 					frappe.bold(self.gateway_settings)
 				)
 			)
-
-	def on_update(self):
-		create_payment_gateway(self.name, settings=self.gateway_settings)
-		if not self.payment_gateway:
-			self.db_set("payment_gateway", self.name, update_modified=False)
 		get_available_payment_modes.clear_cache()
 
 	def on_trash(self):
