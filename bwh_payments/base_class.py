@@ -34,3 +34,13 @@ class PaymentGatewayBase(ABC):
 
 	def get_gateway_name(self) -> str:
 		return self.__class__.__name__
+
+	def get_supported_currencies(self) -> tuple[str, ...] | None:
+		"""The ISO codes this gateway can settle in, or None when it takes whatever the account is set up for.
+
+		Not abstract: most gateways are limited by their own account configuration rather than by anything
+		this code can know, and they say so by returning None. A gateway that hardcodes a list — PayPal
+		cannot take SAR, Tabby takes nothing else — declares it here so the storefront can drop it from the
+		checkout page instead of letting the shopper pick it and only then be refused.
+		"""
+		return None
