@@ -12,6 +12,9 @@ dynamic = ["version"]
 # Webhook.construct_event, StripeClient) exists in 10.x. Declaring a range would fight that pin.
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
+    # stripe_gateway_settings imports this at module level, so every install of a
+    # dependent app dies at import without it. StripeClient needs 11 or newer.
+    "stripe>=11,<16",
 ]
 
 [build-system]
