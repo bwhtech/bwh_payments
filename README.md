@@ -1,79 +1,77 @@
+<div align="center" markdown="1">
+
+<img src="bwh_payments/public/images/bwh_payments.svg" alt="BWH Payments logo" width="80" />
+<h1>BWH Payments</h1>
+
+<a href="https://buildwithhussain.com"><img src=".github/built-at-bwh.svg" alt="Built at BWH" height="28" /></a>
+
+**Hosted checkout for Frappe and ERPNext — one contract, every gateway**
+
+<p>
+	<img src=".github/logos/stripe.svg" alt="Stripe" height="40" />
+	<img src=".github/logos/razorpay.svg" alt="Razorpay" height="40" />
+	<img src=".github/logos/telr.svg" alt="Telr" height="40" />
+	<img src=".github/logos/tabby.svg" alt="Tabby" height="40" />
+</p>
+
+</div>
+
 ## BWH Payments
 
-Hosted-checkout payment gateway integrations for Frappe/ERPNext. Ships Stripe, Telr, Razorpay and Tabby,
-and a contract any further gateway can implement.
+A storefront hands BWH Payments an order and a gateway name, and gets back a hosted checkout URL. What
+happens after that — the redirect, the webhook, the replay, the refund — is the same story whichever
+gateway is behind it. ERPNext stays the ledger: Sales Order → Sales Invoice → Payment Entry is untouched,
+and a `Gateway Payment Request` records only the gateway's side of the conversation.
 
-### What it is
+It is the payments half of [**Commera**](https://github.com/bwhtech/commera), and its shipping sibling is
+[**bwh_shipping**](https://github.com/bwhtech/bwh_shipping).
 
-`Gateway Payment Request` is a **gateway session record**, not a replacement for ERPNext's Payment
-Request. It records the gateway session id, the hosted checkout URL, the payment status and the refund
-ledger. All GL movement stays in ERPNext (Sales Order → Sales Invoice → Payment Entry); the consumer app
-owns that half.
+### Gateways
 
-| DocType | Purpose |
-|---|---|
-| `Payment Gateway Profile` | Registry row: which settings Single backs which gateway, and whether it is enabled. Keeps the core `Payment Gateway` row in sync so `payments.utils.get_payment_gateway_controller` resolves. |
-| `Gateway Payment Request` | One shopper payment: session id, status, refund ledger. Not submittable. `order_ref` is unique. |
-| `Stripe Gateway Settings` | Stripe credentials and redirect URLs. |
-| `Telr Gateway Settings` | Telr credentials and return URLs. |
-| `Razorpay Gateway Settings` | Razorpay credentials, webhook secret and redirect URLs. Hosted checkout runs on Razorpay Payment Links. |
-| `Tabby Gateway Settings` | Tabby (BNPL, MENA) credentials, webhook token, source-IP allowlist and redirect URLs. |
+- **Stripe** — Cards and wallets, worldwide. Checkout Sessions with verified webhook signatures.
+- **Razorpay** — Cards, UPI, netbanking and wallets across India, on Payment Links.
+- **Telr** — Cards and local methods across the GCC, including three-decimal currencies.
+- **Tabby** — Buy now, pay later in four instalments across MENA.
 
-### Setup
+### Key Features
 
-1. `bench get-app https://github.com/Rl0007/bwh_payments && bench --site <site> install-app bwh_payments`
-2. Fill in `Stripe Gateway Settings` (or `Telr Gateway Settings`). The Stripe webhook secret is
-   mandatory — an unverified webhook is an "anyone can mark an order paid" hole.
-3. Create a `Payment Gateway Profile` named after the gateway, pointing at that settings DocType, and
-   enable it. Its name is what the storefront sends and what the matching `Mode of Payment` must be
-   called.
-4. Point the gateway's webhook at
-   `POST /api/method/bwh_payments.bwh_payments.webhook.handle?gateway=<Payment Gateway Profile name>`
+- **One session record, not a second ledger.** `Gateway Payment Request` holds the gateway session id,
+  the hosted checkout URL, the payment status and the refund ledger. `order_ref` is unique, so an order
+  can never grow a second live session.
 
-### Three-decimal currencies (KWD, BHD, OMR)
+- **Replay-safe by construction.** Every webhook is signature-verified and returns the gateway's own event
+  id, so a retried delivery racing a shopper's return is dropped rather than billed twice. Bad signature,
+  unknown gateway and missing gateway all answer the same opaque error — nobody can enumerate what a site
+  has configured.
 
-Frappe derives a Currency field's precision from the **site's** default number format unless System
-Settings has **Use Number Format From Currency** enabled. Without it a 12.345 KWD charge is stored as
-12.35 and the shopper is billed a different figure, so `Gateway Payment Request` refuses the charge
-rather than round it. Turn that setting on before taking payments in a 3-decimal currency.
+- **Refunds, full or partial.** Booked against the session and reconciled back into ERPNext.
 
-### Tabby
+- **Money that survives the round trip.** Amounts cross the provider boundary in major units and convert
+  once, centrally — never a hardcoded `* 100`. A three-decimal currency (KWD, BHD, OMR) whose site would
+  silently round 12.345 to 12.35 has its charge refused rather than billed at a different figure.
 
-Tabby is buy-now-pay-later, so a checkout can be **refused** — the shopper is told to pick another method
-rather than shown an error. A merchant code is tied to one currency (SAR, AED, KWD, BHD or QAR), so a
-multi-currency store needs one `Tabby Gateway Settings`-backed profile per market, which the single
-settings DocType cannot express today.
+- **BNPL that can say no.** Tabby may decline a shopper outright, so the checkout offers another method
+  instead of showing an error, and an authorised payment is captured before it is ever reported Paid.
 
-Tabby does not sign its webhooks: the `X-Webhook-Signature` header is a token **you** choose, register
-with Tabby, and paste into Webhook Secret. The source-IP allowlist is the second line of defence; Tabby
-rotates infrastructure, so it is editable rather than hardcoded.
-
-Tabby authorises and captures separately. `get_payment_status` captures an authorised payment before
-reporting it Paid — without that the shopper is approved and never charged.
+- **Configured from the dashboard.** Each gateway keeps its own credentials in its own settings Single and
+  is switched on independently, through Commera's integrations screen rather than the desk.
 
 ### Adding a gateway
 
-Subclass `bwh_payments.base_class.PaymentGatewayBase` on a Single DocType and implement
-`create_session`, `get_payment_status`, `refund_payment` and `handle_webhook`. Amounts crossing that
-boundary are in **major** units; convert with `bwh_payments.currency.to_minor_units`, never a hardcoded
-`* 100`. `handle_webhook` must verify the gateway's signature and return the gateway's event id so
-replays can be dropped.
+Subclass `PaymentGatewayBase` on a Single DocType and implement four methods — `create_session`,
+`get_payment_status`, `refund_payment` and `handle_webhook`. Nothing in checkout, the callback route or
+the refund path needs to know the new name.
 
-### Dependencies
+### Under the Hood
 
-No `stripe` pin is declared here on purpose: `frappe/payments` pins `stripe~=10.12.0` in the same bench
-venv and every API used (`StripeClient`, `checkout.sessions.create/retrieve`, `refunds.create`,
-`Webhook.construct_event`) exists there.
+- [Frappe Framework](https://github.com/frappe/frappe) — Full-stack Python web framework.
+- [ERPNext](https://github.com/frappe/erpnext) — The accounting the gateways never duplicate.
 
-### Tests
+## About BWH Studios
 
-```bash
-bench --site <site> run-tests --app bwh_payments
-```
-
-They run against a fake Stripe transport (`bwh_payments/tests/fake_stripe.py`) with real signature
-verification — no live gateway calls, ever.
+BWH Payments is developed and maintained by BWH Studios, a tech company based in Jagdalpur, Chhattisgarh,
+specializing in Frappe customizations and consulting.
 
 #### License
 
-mit
+MIT
