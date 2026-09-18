@@ -171,6 +171,69 @@ class TestRazorpayGatewaySettings(RazorpayTestCase):
 		self.assertEqual(session["redirect_url"], f"https://rzp.io/i/{session['session_id']}")
 		self.assertIn("reference_id=GPR-0003", session["success_url"])
 
+	def create_session_for_customer(self, customer):
+		self.get_settings().create_session(100, "INR", reference="GPR-0100", customer=customer)
+		return FakeRazorpay.created_links[-1].get("customer", {})
+
+	def test_a_valid_email_reaches_razorpay(self):
+		customer = self.create_session_for_customer({"email": "shopper@example.com", "phone": "9876543210"})
+
+		self.assertEqual(customer["email"], "shopper@example.com")
+
+	def test_an_address_razorpay_would_refuse_is_dropped_rather_than_failing_the_link(self):
+		customer = self.create_session_for_customer({"email": "Administrator", "phone": "9876543210"})
+
+		self.assertNotIn("email", customer)
+		self.assertEqual(customer["contact"], "9876543210")
+
+	def test_an_unpaid_link_is_cancelled(self):
+		link_id = FakeRazorpay.register_link(status="created")
+
+		self.assertTrue(self.get_settings().cancel_session(link_id))
+		self.assertEqual(FakeRazorpay.links[link_id]["status"], "cancelled")
+
+	def test_a_paid_link_is_not_cancelled_and_does_not_throw(self):
+		link_id = FakeRazorpay.register_link(status="paid")
+
+		self.assertFalse(self.get_settings().cancel_session(link_id))
+		self.assertEqual(FakeRazorpay.links[link_id]["status"], "paid")
+
+	def test_an_unknown_link_is_not_cancelled(self):
+		self.assertFalse(self.get_settings().cancel_session("plink_never_existed"))
+
+	def test_an_abandoned_link_is_released_and_cancelled_at_razorpay(self):
+		payment_request = make_razorpay_payment_request(100)
+
+		self.assertTrue(payment_request.release_if_unpaid())
+		self.assertEqual(payment_request.status, "Cancelled")
+		self.assertEqual(FakeRazorpay.links[payment_request.order_ref]["status"], "cancelled")
+
+	def test_a_link_paid_before_the_release_keeps_its_payment(self):
+		payment_request = make_razorpay_payment_request(100)
+		FakeRazorpay.links[payment_request.order_ref]["status"] = "paid"
+
+		self.assertFalse(payment_request.release_if_unpaid())
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertEqual(FakeRazorpay.links[payment_request.order_ref]["status"], "paid")
+
+	def test_a_link_paid_between_the_status_read_and_the_cancel_keeps_its_payment(self):
+		payment_request = make_razorpay_payment_request(100)
+		link = FakeRazorpay.links[payment_request.order_ref]
+
+		def pay_then_refuse_cancel(session_id):
+			link["status"] = "paid"
+			return False
+
+		with patch.object(
+			type(payment_request.get_gateway_settings()),
+			"cancel_session",
+			side_effect=pay_then_refuse_cancel,
+		):
+			self.assertFalse(payment_request.release_if_unpaid())
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
+
 	# --- status map -------------------------------------------------------
 
 	def get_payment_status(self, status, payment_status=None, treat_authorised_as_paid=0):

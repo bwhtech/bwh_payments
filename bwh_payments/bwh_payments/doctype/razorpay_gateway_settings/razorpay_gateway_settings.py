@@ -9,6 +9,7 @@ import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
 from frappe.model.document import Document
+from frappe.utils import validate_email_address
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import PaymentGatewayBase
@@ -31,6 +32,7 @@ RAZORPAY_LINK_STATUS_MAP = {
 }
 
 RAZORPAY_AUTHORISED_STATUS = "authorized"
+RAZORPAY_CANCELLED_STATUS = "cancelled"
 RAZORPAY_CAPTURED_STATUS = "captured"
 RAZORPAY_PAID_EVENT = "payment_link.paid"
 RAZORPAY_ACCEPTED_REFUND_STATUSES = ("processed", "pending")
@@ -60,7 +62,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		success_url: DF.Data | None
 		test_mode: DF.Check
 		treat_authorised_as_paid: DF.Check
-		webhook_secret: DF.Password
+		webhook_secret: DF.Password | None
 	# end: auto-generated types
 
 	def get_gateway_name(self) -> str:
@@ -190,6 +192,14 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		# matches on it byte-for-byte.
 		return {"session_id": session_id, "status": status, "event_id": event_id}
 
+	def cancel_session(self, session_id: str) -> bool:
+		try:
+			link = self.post(f"/payment_links/{session_id}/cancel", {})
+		except frappe.ValidationError:
+			return False
+
+		return (link.get("status") or "").strip().casefold() == RAZORPAY_CANCELLED_STATUS
+
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> dict:
 		currency = currency or self.currency
 		payment_id = get_captured_payment_id(self.get_payment_link(session_id))
@@ -267,7 +277,7 @@ def get_customer_details(customer: dict) -> dict:
 	"""Only the values Razorpay will accept: it rejects a blank `contact` or `email` outright."""
 	details = {
 		"name": get_customer_name(customer),
-		"email": customer.get("email"),
+		"email": validate_email_address(customer.get("email") or "", throw=False),
 		"contact": customer.get("phone"),
 	}
 	return {key: value for key, value in details.items() if value}
