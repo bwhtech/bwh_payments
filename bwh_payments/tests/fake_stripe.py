@@ -11,6 +11,7 @@ import time
 from typing import ClassVar
 
 import frappe
+import stripe
 from frappe import _dict
 
 
@@ -74,6 +75,17 @@ class FakeSessionService:
 		session = FakeStripeClient.sessions.get(session_id)
 		if not session:
 			raise KeyError(f"unknown session {session_id}")
+		return FakeStripeSession(**session)
+
+	def expire(self, session_id):
+		session = FakeStripeClient.sessions.get(session_id)
+		if not session:
+			raise stripe.InvalidRequestError(f"unknown session {session_id}", param="session")
+		if session["status"] != "open":
+			raise stripe.InvalidRequestError(
+				f"session is {session['status']} and cannot be expired", param="session"
+			)
+		session["status"] = "expired"
 		return FakeStripeSession(**session)
 
 

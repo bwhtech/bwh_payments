@@ -133,6 +133,24 @@ class GatewayPaymentRequest(Document):
 		self.status = status
 		self.save(ignore_permissions=True)
 
+	@frappe.whitelist()
+	def release_if_unpaid(self) -> bool:
+		self.sync_status()
+		if self.status != "Pending":
+			return self.status in ("Cancelled", "Expired", "Not Paid")
+
+		if not self.get_gateway_settings().cancel_session(self.order_ref):
+			self.sync_status()
+			return False
+
+		self.lock_refund_ledger()
+		if self.status != "Pending":
+			return False
+
+		self.status = "Cancelled"
+		self.save(ignore_permissions=True)
+		return True
+
 	def get_remaining_refundable_amount(self) -> float:
 		# Refund arithmetic is pinned to the currency's own minor unit, not the field precision, so a
 		# full refund always adds up to exactly what was charged.

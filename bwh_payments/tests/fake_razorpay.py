@@ -65,6 +65,21 @@ class FakeRazorpay:
 			)
 			return dict(cls.links[link_id])
 
+		if endpoint.startswith(f"{PAYMENT_LINKS_ENDPOINT}/") and endpoint.endswith("/cancel"):
+			link_id = endpoint.split("/")[2]
+			link = cls.links.get(link_id)
+			if not link:
+				return {"error": {"code": "BAD_REQUEST_ERROR", "description": "payment link not found"}}
+			if link["status"] != "created":
+				return {
+					"error": {
+						"code": "BAD_REQUEST_ERROR",
+						"description": f"payment link is not cancellable in state {link['status']}",
+					}
+				}
+			link["status"] = "cancelled"
+			return dict(link)
+
 		if endpoint.startswith("/payments/") and endpoint.endswith("/refund"):
 			cls.created_refunds.append({"payment_id": endpoint.split("/")[2], **payload})
 			return {

@@ -32,5 +32,8 @@ class PaymentGatewayBase(ABC):
 	def handle_webhook(self, payload: bytes, headers: dict) -> dict:
 		"""Verify the signature, then return {} to ignore or {"session_id", "status", "event_id"}."""
 
+	def cancel_session(self, session_id: str) -> bool:
+		return False
+
 	def get_gateway_name(self) -> str:
 		return self.__class__.__name__

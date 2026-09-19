@@ -92,12 +92,11 @@
    "label": "Webhook"
   },
   {
-   "description": "Required, and different from the Key Secret. Without it a webhook cannot be verified and anyone could mark an order paid.",
+   "description": "Optional, and different from the Key Secret. Until it is set, webhook deliveries are rejected and payment status is only picked up by polling.",
    "fieldname": "webhook_secret",
    "fieldtype": "Password",
    "in_list_view": 1,
-   "label": "Webhook Secret",
-   "reqd": 1
+   "label": "Webhook Secret"
   },
   {
    "fieldname": "section_break_urls",

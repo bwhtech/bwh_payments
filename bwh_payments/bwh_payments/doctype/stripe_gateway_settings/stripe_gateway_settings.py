@@ -96,6 +96,14 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 			return "Expired"
 		return "Pending"
 
+	def cancel_session(self, session_id: str) -> bool:
+		try:
+			session = self.get_client().checkout.sessions.expire(session_id)
+		except stripe.StripeError:
+			return False
+
+		return session.status == "expired"
+
 	def handle_webhook(self, payload: bytes, headers: dict) -> dict:
 		webhook_secret = self.get_password("webhook_secret")
 		if not webhook_secret:
