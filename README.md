@@ -5,7 +5,7 @@
 
 <a href="https://buildwithhussain.com"><img src=".github/built-at-bwh.svg" alt="Built at BWH" height="28" /></a>
 
-**Hosted checkout for Frappe and ERPNext: one contract, every gateway**
+**Online payments for Frappe apps, through hosted checkout pages**
 
 <p>
 	<img src=".github/logos/stripe.svg" alt="Stripe" height="40" />
@@ -16,71 +16,71 @@
 
 </div>
 
-## BWH Payments
-
-Your app hands BWH Payments an amount and a gateway name, and gets back a hosted checkout URL. The
-redirect, the webhook, a replayed webhook and the refund then work the same way, whichever gateway is
-behind it. A `Gateway Payment Request` records the gateway's side of the conversation, and your
-app decides what a paid request turns into.
-
-📖 **[Developer docs](https://bwhdocs.fsn.frappe.cloud/bwh-payments/get-started/overview)**: take a
-payment, build return pages, add your own gateway, and set up each built-in one.
+BWH Payments lets a Frappe app take payments through Stripe, Razorpay, Telr or Tabby, using the same code
+for every gateway. Read the **[developer docs](https://bwhdocs.fsn.frappe.cloud/bwh-payments/get-started/overview)**.
 
 ### Gateways
 
-- **Stripe**: Cards and wallets, worldwide. Checkout Sessions with verified webhook signatures.
-- **Razorpay**: Cards, UPI, netbanking and wallets across India, on Payment Links.
-- **Telr**: Cards and local methods across the GCC, including three-decimal currencies.
-- **Tabby**: Buy now, pay later in four instalments across MENA.
+- **Stripe**: cards and wallets, worldwide
+- **Razorpay**: cards, UPI, netbanking and wallets in India
+- **Telr**: cards and local payment methods in the GCC
+- **Tabby**: buy now, pay later in Saudi Arabia, the UAE, Kuwait, Bahrain and Qatar
 
-### Key Features
+### Features
 
-- **One session record, not a second ledger.** `Gateway Payment Request` holds the gateway session id,
-  the hosted checkout URL, the payment status and the refund ledger. `order_ref` is unique, so an order
-  can never grow a second live session.
+- Hosted checkout pages, so card details never touch your site
+- Payment status from signed webhooks, or by asking the gateway directly
+- Full and partial refunds
+- Currencies with 0, 2 or 3 decimal places, such as JPY, USD and KWD
+- Add your own gateway with one Python class
+- Works without ERPNext. With ERPNext, refund Payment Entries also refund the gateway.
 
-- **Replay-safe by construction.** Every webhook is signature-verified and returns the gateway's own event
-  id, so a retried delivery racing a shopper's return is dropped rather than billed twice. Bad signature,
-  unknown gateway and missing gateway all answer the same opaque error, so nobody can enumerate what a site
-  has configured.
+### How it works
 
-- **Refunds, full or partial.** Booked against the session. With ERPNext installed, submitting a refund
-  Payment Entry sends the refund to the gateway too.
+```mermaid
+sequenceDiagram
+    participant App as Your app
+    participant BP as BWH Payments
+    participant GW as Gateway
 
-- **Money that survives the round trip.** Amounts cross the provider boundary in major units and convert
-  once, centrally, never with a hardcoded `* 100`. A three-decimal currency (KWD, BHD, OMR) whose site would
-  silently round 12.345 to 12.35 has its charge refused rather than billed at a different figure.
-
-- **BNPL that can say no.** Tabby may decline a shopper outright, so the checkout offers another method
-  instead of showing an error, and an authorised payment is captured before it is ever reported Paid.
-
-- **One switch per gateway.** Each gateway keeps its credentials in its own settings Single and is turned
-  on independently with a `Payment Gateway Profile`.
+    App->>BP: create a Gateway Payment Request
+    BP->>GW: open a checkout session
+    GW-->>BP: checkout URL
+    BP-->>App: checkout URL for the shopper
+    Note over App,GW: The shopper pays on the gateway's page
+    GW->>BP: signed webhook, payment completed
+    BP-->>App: request status is Paid
+```
 
 ### Installation
 
-BWH Payments runs on Frappe 16 or later. ERPNext is optional.
+You need Frappe 16 or later.
 
 ```bash
 bench get-app https://github.com/bwhtech/bwh_payments
 bench --site your.site install-app bwh_payments
 ```
 
-Then fill in a gateway's settings and create a `Payment Gateway Profile` for it. Each gateway's setup is
-in the [docs](https://bwhdocs.fsn.frappe.cloud/bwh-payments/gateways/stripe).
+Then [set up a gateway](https://bwhdocs.fsn.frappe.cloud/bwh-payments/gateways/stripe) and
+[build your return pages](https://bwhdocs.fsn.frappe.cloud/bwh-payments/get-started/return-pages).
 
 ### Adding a gateway
 
-Subclass `PaymentGatewayBase` on a Single DocType in your own app, and implement four methods:
-`create_session`, `get_payment_status`, `refund_payment` and `handle_webhook`. Nothing in checkout, the
-webhook endpoint or the refund path needs to know the new name. The
-[step-by-step guide](https://bwhdocs.fsn.frappe.cloud/bwh-payments/build/build-a-payment-gateway) builds
-one from scratch, tests included.
+Create a Single DocType in your own app, extend `PaymentGatewayBase`, and implement `create_session`,
+`get_payment_status`, `refund_payment` and `handle_webhook`. The
+[step-by-step guide](https://bwhdocs.fsn.frappe.cloud/bwh-payments/build/build-a-payment-gateway) walks
+through it, tests included.
 
-### Under the Hood
+### Development
 
-- [Frappe Framework](https://github.com/frappe/frappe): Full-stack Python web framework.
-- [ERPNext](https://github.com/frappe/erpnext): Optional. Refund Payment Entries reach the gateway.
+```bash
+bench --site test_site set-config allow_tests true
+bench --site test_site run-tests --app bwh_payments
+```
+
+### Support
+
+Found a bug or have a question? [Open an issue](https://github.com/bwhtech/bwh_payments/issues).
 
 ## About BWH Studios
 
