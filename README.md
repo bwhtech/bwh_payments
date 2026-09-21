@@ -18,13 +18,13 @@
 
 ## BWH Payments
 
-A storefront hands BWH Payments an order and a gateway name, and gets back a hosted checkout URL. What
+Your app hands BWH Payments an amount and a gateway name, and gets back a hosted checkout URL. What
 happens after that — the redirect, the webhook, the replay, the refund — is the same story whichever
-gateway is behind it. ERPNext stays the ledger: Sales Order → Sales Invoice → Payment Entry is untouched,
-and a `Gateway Payment Request` records only the gateway's side of the conversation.
+gateway is behind it. A `Gateway Payment Request` records the gateway's side of the conversation, and your
+app decides what a paid request turns into.
 
-It is the payments half of [**Commera**](https://github.com/bwhtech/commera), and its shipping sibling is
-[**bwh_shipping**](https://github.com/bwhtech/bwh_shipping).
+📖 **[Developer docs](https://bwhdocs.fsn.frappe.cloud/bwh-payments/get-started/overview)**: take a
+payment, build return pages, add your own gateway, and set up each built-in one.
 
 ### Gateways
 
@@ -44,7 +44,8 @@ It is the payments half of [**Commera**](https://github.com/bwhtech/commera), an
   unknown gateway and missing gateway all answer the same opaque error — nobody can enumerate what a site
   has configured.
 
-- **Refunds, full or partial.** Booked against the session and reconciled back into ERPNext.
+- **Refunds, full or partial.** Booked against the session. With ERPNext installed, submitting a refund
+  Payment Entry sends the refund to the gateway too.
 
 - **Money that survives the round trip.** Amounts cross the provider boundary in major units and convert
   once, centrally — never a hardcoded `* 100`. A three-decimal currency (KWD, BHD, OMR) whose site would
@@ -53,19 +54,33 @@ It is the payments half of [**Commera**](https://github.com/bwhtech/commera), an
 - **BNPL that can say no.** Tabby may decline a shopper outright, so the checkout offers another method
   instead of showing an error, and an authorised payment is captured before it is ever reported Paid.
 
-- **Configured from the dashboard.** Each gateway keeps its own credentials in its own settings Single and
-  is switched on independently, through Commera's integrations screen rather than the desk.
+- **One switch per gateway.** Each gateway keeps its credentials in its own settings Single and is turned
+  on independently with a `Payment Gateway Profile`.
+
+### Installation
+
+BWH Payments runs on Frappe 16 or later. ERPNext is optional.
+
+```bash
+bench get-app https://github.com/bwhtech/bwh_payments
+bench --site your.site install-app bwh_payments
+```
+
+Then fill in a gateway's settings and create a `Payment Gateway Profile` for it. Each gateway's setup is
+in the [docs](https://bwhdocs.fsn.frappe.cloud/bwh-payments/gateways/stripe).
 
 ### Adding a gateway
 
-Subclass `PaymentGatewayBase` on a Single DocType and implement four methods — `create_session`,
-`get_payment_status`, `refund_payment` and `handle_webhook`. Nothing in checkout, the callback route or
-the refund path needs to know the new name.
+Subclass `PaymentGatewayBase` on a Single DocType in your own app, and implement four methods:
+`create_session`, `get_payment_status`, `refund_payment` and `handle_webhook`. Nothing in checkout, the
+webhook endpoint or the refund path needs to know the new name. The
+[step-by-step guide](https://bwhdocs.fsn.frappe.cloud/bwh-payments/build/build-a-payment-gateway) builds
+one from scratch, tests included.
 
 ### Under the Hood
 
 - [Frappe Framework](https://github.com/frappe/frappe) — Full-stack Python web framework.
-- [ERPNext](https://github.com/frappe/erpnext) — The accounting the gateways never duplicate.
+- [ERPNext](https://github.com/frappe/erpnext) — Optional. Refund Payment Entries reach the gateway.
 
 ## About BWH Studios
 
