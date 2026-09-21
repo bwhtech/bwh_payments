@@ -17,7 +17,7 @@
 </div>
 
 BWH Payments lets a Frappe app take payments through Stripe, Razorpay, Telr or Tabby, using the same code
-for every gateway. Read the **[developer docs](https://bwhdocs.fsn.frappe.cloud/bwh-payments/get-started/overview)**.
+for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payments/get-started/overview)**.
 
 ### Gateways
 
