@@ -6,7 +6,10 @@ from frappe import _
 from frappe.model.document import Document
 
 from bwh_payments.base_class import PaymentGatewayBase
-from bwh_payments.bwh_payments.utils import get_available_payment_modes
+from bwh_payments.bwh_payments.utils import (
+	get_available_payment_modes,
+	get_gateway_currency_support,
+)
 
 
 class PaymentGatewayProfile(Document):
@@ -33,10 +36,17 @@ class PaymentGatewayProfile(Document):
 					frappe.bold(self.gateway_settings)
 				)
 			)
-		get_available_payment_modes.clear_cache()
+
+	def on_update(self):
+		self.clear_gateway_caches()
 
 	def on_trash(self):
+		self.clear_gateway_caches()
+
+	def clear_gateway_caches(self):
+		# The currency map is keyed on the enabled list, so the two always go stale together.
 		get_available_payment_modes.clear_cache()
+		get_gateway_currency_support.clear_cache()
 
 	def get_controller(self) -> PaymentGatewayBase:
 		return frappe.get_single(self.gateway_settings)
