@@ -7,7 +7,6 @@
  "engine": "InnoDB",
  "field_order": [
   "gateway_settings",
-  "payment_gateway",
   "column_break_qgbw",
   "enabled"
  ],
@@ -19,14 +18,6 @@
    "label": "Gateway Settings",
    "options": "DocType",
    "reqd": 1
-  },
-  {
-   "description": "Core Payment Gateway row kept in sync so frappe/payments can resolve this controller.",
-   "fieldname": "payment_gateway",
-   "fieldtype": "Link",
-   "label": "Payment Gateway",
-   "options": "Payment Gateway",
-   "read_only": 1
   },
   {
    "fieldname": "column_break_qgbw",

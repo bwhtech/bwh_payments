@@ -12,11 +12,19 @@ dynamic = ["version"]
 # Webhook.construct_event, StripeClient) exists in 10.x. Declaring a range would fight that pin.
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
+    # stripe_gateway_settings imports this at module level, so every install of a
+    # dependent app dies at import without it. StripeClient needs 11 or newer.
+    "stripe>=11,<16",
 ]
 
 [build-system]
 requires = ["flit_core >=3.4,<4"]
 build-backend = "flit_core.buildapi"
+
+# Bench resolves this itself; it is not pip-installable, which is why the commented-out
+# "frappe~=16.0.0" above can never satisfy bench's compatibility check.
+[tool.bench.frappe-dependencies]
+frappe = ">=16.0.0-dev,<18.0.0"
 
 # These dependencies are only installed when developer mode is enabled
 [tool.bench.dev-dependencies]

@@ -1,58 +1,77 @@
-## BWH Payments
+<div align="center" markdown="1">
 
-Hosted-checkout payment gateway integrations for Frappe/ERPNext. Ships Stripe, Telr, Razorpay, Tabby and
-PayPal, and a contract any further gateway can implement.
+<img src="bwh_payments/public/images/bwh_payments.svg" alt="BWH Payments logo" width="80" />
+<h1>BWH Payments</h1>
 
-### What it is
+<a href="https://buildwithhussain.com"><img src=".github/built-at-bwh.svg" alt="Built at BWH" height="28" /></a>
 
-`Gateway Payment Request` is a **gateway session record**, not a replacement for ERPNext's Payment
-Request. It records the gateway session id, the hosted checkout URL, the payment status and the refund
-ledger. All GL movement stays in ERPNext (Sales Order → Sales Invoice → Payment Entry); the consumer app
-owns that half.
+**Online payments for Frappe apps, through hosted checkout pages**
 
-| DocType | Purpose |
-|---|---|
-| `Payment Gateway Profile` | Registry row: which settings Single backs which gateway, and whether it is enabled. Keeps the core `Payment Gateway` row in sync so `payments.utils.get_payment_gateway_controller` resolves. |
-| `Gateway Payment Request` | One shopper payment: session id, status, refund ledger. Not submittable. `order_ref` is unique. |
-| `Stripe Gateway Settings` | Stripe credentials and redirect URLs. |
-| `Telr Gateway Settings` | Telr credentials and return URLs. |
-| `Razorpay Gateway Settings` | Razorpay credentials, webhook secret and redirect URLs. Hosted checkout runs on Razorpay Payment Links. |
-| `Tabby Gateway Settings` | Tabby (BNPL, MENA) credentials, webhook token, source-IP allowlist and redirect URLs. |
-| `PayPal Gateway Settings` | PayPal REST credentials, webhook id and redirect URLs. Hosted checkout runs on Orders v2. |
+<p>
+	<img src=".github/logos/stripe.svg" alt="Stripe" height="40" />
+	<img src=".github/logos/razorpay.svg" alt="Razorpay" height="40" />
+	<img src=".github/logos/telr.svg" alt="Telr" height="40" />
+	<img src=".github/logos/tabby.svg" alt="Tabby" height="40" />
+</p>
 
-### Setup
+</div>
 
-1. `bench get-app https://github.com/Rl0007/bwh_payments && bench --site <site> install-app bwh_payments`
-2. Fill in `Stripe Gateway Settings` (or `Telr Gateway Settings`). The Stripe webhook secret is
-   mandatory — an unverified webhook is an "anyone can mark an order paid" hole.
-3. Create a `Payment Gateway Profile` named after the gateway, pointing at that settings DocType, and
-   enable it. Its name is what the storefront sends and what the matching `Mode of Payment` must be
-   called.
-4. Point the gateway's webhook at
-   `POST /api/method/bwh_payments.bwh_payments.webhook.handle?gateway=<Payment Gateway Profile name>`
+BWH Payments lets a Frappe app take payments through Stripe, Razorpay, Telr, Tabby or PayPal, using the
+same code for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payments/get-started/overview)**.
 
-### Three-decimal currencies (KWD, BHD, OMR)
+### Gateways
 
-Frappe derives a Currency field's precision from the **site's** default number format unless System
-Settings has **Use Number Format From Currency** enabled. Without it a 12.345 KWD charge is stored as
-12.35 and the shopper is billed a different figure, so `Gateway Payment Request` refuses the charge
-rather than round it. Turn that setting on before taking payments in a 3-decimal currency.
+- **Stripe**: cards and wallets, worldwide
+- **Razorpay**: cards, UPI, netbanking and wallets in India
+- **Telr**: cards and local payment methods in the GCC
+- **Tabby**: buy now, pay later in Saudi Arabia, the UAE, Kuwait, Bahrain and Qatar
+- **PayPal**: PayPal wallet payments in supported currencies
 
-### Tabby
+### Features
 
-Tabby is buy-now-pay-later, so a checkout can be **refused** — the shopper is told to pick another method
-rather than shown an error. A merchant code is tied to one currency (SAR, AED, KWD, BHD or QAR), so a
-multi-currency store needs one `Tabby Gateway Settings`-backed profile per market, which the single
-settings DocType cannot express today.
+- Hosted checkout pages, so card details never touch your site
+- Payment status from signed webhooks, or by asking the gateway directly
+- Full and partial refunds
+- Currencies with 0, 2 or 3 decimal places, such as JPY, USD and KWD
+- Add your own gateway with one Python class
+- Works without ERPNext. With ERPNext, refund Payment Entries also refund the gateway.
 
-Tabby does not sign its webhooks: the `X-Webhook-Signature` header is a token **you** choose, register
-with Tabby, and paste into Webhook Secret. The source-IP allowlist is the second line of defence; Tabby
-rotates infrastructure, so it is editable rather than hardcoded.
+### How it works
 
-Tabby authorises and captures separately. `get_payment_status` captures an authorised payment before
-reporting it Paid — without that the shopper is approved and never charged.
+```mermaid
+sequenceDiagram
+    participant App as Your app
+    participant BP as BWH Payments
+    participant GW as Gateway
+
+    App->>BP: create a Gateway Payment Request
+    BP->>GW: open a checkout session
+    GW-->>BP: checkout URL
+    BP-->>App: checkout URL for the shopper
+    Note over App,GW: The shopper pays on the gateway's page
+    GW->>BP: signed webhook, payment completed
+    BP-->>App: request status is Paid
+```
+
+### Installation
+
+You need Frappe 16 or later.
+
+```bash
+bench get-app https://github.com/bwhtech/bwh_payments
+bench --site your.site install-app bwh_payments
+```
+
+Then [set up a gateway](https://bwhdocs.fsn.frappe.cloud/bwh-payments/gateways/stripe) and
+[build your return pages](https://bwhdocs.fsn.frappe.cloud/bwh-payments/get-started/return-pages).
 
 ### PayPal
+
+Fill in `PayPal Gateway Settings` with a client ID, client secret and webhook ID for the selected
+Sandbox or Live mode. Create and enable a `Payment Gateway Profile` named `PayPal` that points to those
+settings. Configure the PayPal webhook at
+`POST /api/method/bwh_payments.bwh_payments.webhook.handle?gateway=PayPal` and subscribe to
+`CHECKOUT.ORDER.APPROVED` and `PAYMENT.CAPTURE.COMPLETED`.
 
 PayPal cannot settle in **SAR, AED, KWD, BHD, QAR or INR**. On a Gulf storefront that means it must not
 be offered on the home currency at all, which is what `get_supported_currencies` is for — the checkout
@@ -67,7 +86,6 @@ other call having succeeded rather than as a failure.
 PayPal signs its webhooks with a certificate rather than a shared secret, so there is nothing to verify
 locally: every delivery is verified by calling `POST /v1/notifications/verify-webhook-signature` back at
 PayPal. That needs the **Webhook ID** from the PayPal dashboard, which is an identifier and not a secret.
-Subscribe the webhook to `CHECKOUT.ORDER.APPROVED` and `PAYMENT.CAPTURE.COMPLETED`.
 
 Amounts go to PayPal as major-unit decimal strings. HUF and TWD are two-decimal currencies under ISO
 4217 but whole-only at PayPal, so a fractional charge in them is refused rather than rounded.
@@ -79,30 +97,34 @@ named `PayPal` pointing at it, and creating this profile will **not** repoint it
 
 ### Adding a gateway
 
-Subclass `bwh_payments.base_class.PaymentGatewayBase` on a Single DocType and implement
-`create_session`, `get_payment_status`, `refund_payment` and `handle_webhook`. Amounts crossing that
-boundary are in **major** units; convert with `bwh_payments.currency.to_minor_units`, never a hardcoded
-`* 100`. `handle_webhook` must verify the gateway's signature and return the gateway's event id so
-replays can be dropped. A gateway limited to a fixed set of currencies also overrides
-`get_supported_currencies`, so the storefront can drop it from checkout rather than let a shopper pick
-it and only then be refused; that is a display filter, so keep enforcing the same list in
-`create_session` too.
+Create a Single DocType in your own app, extend `PaymentGatewayBase`, and implement `create_session`,
+`get_payment_status`, `refund_payment` and `handle_webhook`. The
+[step-by-step guide](https://bwhdocs.fsn.frappe.cloud/bwh-payments/build/build-a-payment-gateway) walks
+through it, tests included.
 
-### Dependencies
+Amounts passed to these methods are in major units. A gateway with a fixed currency list can implement
+`get_supported_currencies` to filter checkout options, and must also validate the currency in
+`create_session`.
 
-No `stripe` pin is declared here on purpose: `frappe/payments` pins `stripe~=10.12.0` in the same bench
-venv and every API used (`StripeClient`, `checkout.sessions.create/retrieve`, `refunds.create`,
-`Webhook.construct_event`) exists there.
-
-### Tests
+### Development
 
 ```bash
-bench --site <site> run-tests --app bwh_payments
+bench --site test_site set-config allow_tests true
+bench --site test_site run-tests --app bwh_payments
 ```
 
 They run against fake transports (`bwh_payments/tests/fake_stripe.py`, `fake_razorpay.py`,
 `fake_paypal.py`) with real signature verification — no live gateway calls, ever.
 
+### Support
+
+Found a bug or have a question? [Open an issue](https://github.com/bwhtech/bwh_payments/issues).
+
+## About BWH Studios
+
+BWH Payments is developed and maintained by BWH Studios, a tech company based in Jagdalpur, Chhattisgarh,
+specializing in Frappe customizations and consulting.
+
 #### License
 
-mit
+MIT

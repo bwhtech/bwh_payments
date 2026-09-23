@@ -292,6 +292,35 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 	# --- polled status ----------------------------------------------------
 
+	def test_an_abandoned_session_is_released_and_expired_at_the_gateway(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		self.assertTrue(payment_request.release_if_unpaid())
+		self.assertEqual(payment_request.status, "Cancelled")
+		self.assertEqual(FakeStripeClient.sessions[payment_request.order_ref]["status"], "expired")
+
+	def test_a_paid_session_keeps_its_payment_and_is_never_expired(self):
+		payment_request = make_payment_request(100, "SAR")
+		FakeStripeClient.register_paid_session(payment_request.order_ref, "sar")
+
+		self.assertFalse(payment_request.release_if_unpaid())
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertEqual(FakeStripeClient.sessions[payment_request.order_ref]["status"], "complete")
+
+	def test_a_session_the_gateway_will_not_cancel_stays_pending(self):
+		payment_request = make_payment_request(100, "SAR")
+		with patch.object(type(payment_request.get_gateway_settings()), "cancel_session", return_value=False):
+			self.assertFalse(payment_request.release_if_unpaid())
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Pending")
+
+	def test_a_gateway_that_cannot_cancel_at_all_never_releases_the_cart(self):
+		from bwh_payments.base_class import PaymentGatewayBase
+
+		payment_request = make_payment_request(100, "SAR")
+		self.assertFalse(PaymentGatewayBase.cancel_session(object(), payment_request.order_ref))
+
 	def test_sync_status_does_not_reopen_a_payment_a_webhook_already_settled(self):
 		"""The shopper's poll and the webhook race; the poll must lose, not overwrite."""
 		payment_request = make_payment_request(100, "SAR")
