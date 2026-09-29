@@ -89,9 +89,7 @@ def remember_original_state(settings):
 		"Payment Gateway Profile", PAYPAL_GATEWAY, "enabled"
 	)
 	snapshot = {
-		field: settings.get(field)
-		for field in SETTINGS_FIELDS
-		if field not in SETTINGS_PASSWORD_FIELDS
+		field: settings.get(field) for field in SETTINGS_FIELDS if field not in SETTINGS_PASSWORD_FIELDS
 	}
 	for field in SETTINGS_PASSWORD_FIELDS:
 		snapshot[field] = settings.get_password(field, raise_exception=False)
@@ -335,6 +333,15 @@ class TestPayPalGatewaySettings(PayPalTestCase):
 		self.assertEqual(FakePayPal.created_refunds[0]["amount"]["value"], "12.50")
 		self.assertEqual(result["status"], "COMPLETED")
 		self.assertEqual(result["amount"], 12.5)
+
+	def test_a_partially_refunded_capture_can_refund_its_balance(self):
+		settings = self.get_settings()
+		order_id = FakePayPal.register_order(status="COMPLETED")
+		capture_id = FakePayPal.add_capture(order_id, status="PARTIALLY_REFUNDED")
+
+		settings.refund_payment(order_id, 5, "USD")
+
+		self.assertEqual(FakePayPal.created_refunds[0]["capture_id"], capture_id)
 
 	def test_refund_without_a_capture_is_refused_with_something_actionable(self):
 		settings = self.get_settings()

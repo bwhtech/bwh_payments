@@ -67,8 +67,9 @@ PAYPAL_STATUS_MAP = {
 }
 
 PAYPAL_APPROVED_STATUS = "APPROVED"
-PAYPAL_COMPLETED_STATUS = "COMPLETED"
 PAYPAL_ACCEPTED_REFUND_STATUSES = ("COMPLETED", "PENDING")
+# A partial refund moves the capture to PARTIALLY_REFUNDED, and the balance must stay refundable.
+PAYPAL_REFUNDABLE_CAPTURE_STATUSES = ("COMPLETED", "PARTIALLY_REFUNDED")
 PAYPAL_ALREADY_CAPTURED_ISSUE = "ORDER_ALREADY_CAPTURED"
 PAYPAL_VERIFICATION_SUCCESS = "SUCCESS"
 
@@ -473,7 +474,7 @@ def get_completed_capture_id(order: dict) -> str:
 	"""An order is not a charge, so a refund has to go against the capture that collected the money."""
 	for purchase_unit in order.get("purchase_units") or []:
 		for capture in ((purchase_unit.get("payments") or {}).get("captures")) or []:
-			if read_status(capture) == PAYPAL_COMPLETED_STATUS:
+			if read_status(capture) in PAYPAL_REFUNDABLE_CAPTURE_STATUSES:
 				return capture["id"]
 
 	frappe.throw(
