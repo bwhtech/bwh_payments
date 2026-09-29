@@ -74,6 +74,11 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 	def get_gateway_name(self) -> str:
 		return "Tabby"
 
+	def get_supported_currencies(self) -> tuple[str, ...]:
+		# `validate_tabby_currency` still enforces this on the way in: filtering only decides what the
+		# checkout page offers, and the storefront resolves a shopper's chosen mode without a currency.
+		return TABBY_SUPPORTED_CURRENCIES
+
 	def get_headers(self) -> dict:
 		return {
 			"Authorization": f"Bearer {self.get_password('key_secret')}",

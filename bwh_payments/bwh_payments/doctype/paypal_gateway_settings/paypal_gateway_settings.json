@@ -1,0 +1,159 @@
+{
+ "actions": [],
+ "creation": "2026-09-03 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "column_break_mode",
+  "mode",
+  "section_break_keys",
+  "client_id",
+  "currency",
+  "column_break_keys",
+  "client_secret",
+  "section_break_webhook",
+  "webhook_id",
+  "section_break_branding",
+  "brand_name",
+  "section_break_urls",
+  "success_url",
+  "column_break_urls",
+  "cancelled_url",
+  "column_break_urls_two",
+  "failure_url"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "column_break_mode",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Sandbox",
+   "description": "Selects which PayPal API the credentials below are sent to. Sandbox and Live credentials are not interchangeable.",
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "label": "Mode",
+   "options": "Sandbox\nLive",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_keys",
+   "fieldtype": "Section Break",
+   "label": "API Credentials"
+  },
+  {
+   "fieldname": "client_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Client ID",
+   "reqd": 1
+  },
+  {
+   "description": "Fallback currency when the payment request does not carry one. PayPal cannot settle in SAR, AED, KWD, BHD, QAR or INR.",
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "column_break_keys",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "client_secret",
+   "fieldtype": "Password",
+   "in_list_view": 1,
+   "label": "Client Secret",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_webhook",
+   "fieldtype": "Section Break",
+   "label": "Webhook"
+  },
+  {
+   "description": "The webhook's ID from the PayPal dashboard, not a secret. PayPal signs its deliveries with a certificate, so every one is verified by calling PayPal back with this ID. Without it a webhook cannot be verified and anyone could mark an order paid.",
+   "fieldname": "webhook_id",
+   "fieldtype": "Data",
+   "label": "Webhook ID",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_branding",
+   "fieldtype": "Section Break",
+   "label": "Branding"
+  },
+  {
+   "description": "Shown to the shopper on PayPal's approval page. Defaults to the site name.",
+   "fieldname": "brand_name",
+   "fieldtype": "Data",
+   "label": "Brand Name"
+  },
+  {
+   "fieldname": "section_break_urls",
+   "fieldtype": "Section Break",
+   "label": "Redirect URLs"
+  },
+  {
+   "fieldname": "success_url",
+   "fieldtype": "Data",
+   "label": "Success URL",
+   "options": "URL"
+  },
+  {
+   "fieldname": "column_break_urls",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Where PayPal returns a shopper who backs out of the approval page.",
+   "fieldname": "cancelled_url",
+   "fieldtype": "Data",
+   "label": "Cancelled URL",
+   "options": "URL"
+  },
+  {
+   "fieldname": "column_break_urls_two",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "PayPal has no separate failure redirect; it is recorded on the request so the storefront has somewhere to send a shopper whose payment did not complete.",
+   "fieldname": "failure_url",
+   "fieldtype": "Data",
+   "label": "Failure URL",
+   "options": "URL"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-03 12:32:14.972706",
+ "modified_by": "Administrator",
+ "module": "BWH Payments",
+ "name": "PayPal Gateway Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
