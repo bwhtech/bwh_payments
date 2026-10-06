@@ -59,11 +59,9 @@ def configure_razorpay_gateway():
 def remove_razorpay_gateway():
 	"""Undo configure_razorpay_gateway.
 
-	This matters more here than it does for Stripe: the Razorpay controller calls `create_request_log` on
-	every single HTTP call, and that helper ends in an unconditional `frappe.db.commit()`. So every test
-	that touches the transport escapes the per-test rollback and pins its rows to the site. Without this
-	the dev site is left with an enabled gateway backed by a fake `rzp_test_x` key, which the storefront
-	then offers shoppers at checkout.
+	Callers reach for this from tearDownClass, after the per-test rollback. Without it the dev site is left
+	with an enabled gateway backed by a fake `rzp_test_x` key, which the storefront then offers shoppers at
+	checkout.
 	"""
 	for request_name in frappe.get_all(
 		"Gateway Payment Request", filters={"gateway": RAZORPAY_GATEWAY}, pluck="name"

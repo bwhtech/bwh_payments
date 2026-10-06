@@ -2,6 +2,7 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 
 import frappe
+from frappe.integrations.utils import get_json
 from frappe.utils.caching import site_cache
 
 # A leading path segment that looks like "en" or "en-GB" is treated as the language prefix. Matching on
@@ -41,3 +42,28 @@ def get_localised_url(url: str) -> str:
 
 	segments[1] = language
 	return urlunsplit((parts.scheme, parts.netloc, "/".join(segments), parts.query, parts.fragment))
+
+
+def create_request_log(data: dict, service_name: str, output=None, error=None, defer=False, **kwargs):
+	"""`frappe.integrations.utils.create_request_log` without its `frappe.db.commit()`.
+
+	That commit ends the caller's transaction: it releases the row lock a refund holds against a concurrent
+	refund, and it makes the caller's half-done work permanent, such as a Payment Entry whose refund then fails.
+
+	`defer` queues the record in Redis instead, for a failure the caller is about to roll back. It reaches the
+	table when the scheduler next flushes deferred inserts.
+	"""
+	log = frappe.get_doc(
+		{
+			"doctype": "Integration Request",
+			"integration_request_service": service_name,
+			"data": get_json(data),
+			"output": get_json(output),
+			"error": get_json(error),
+			**kwargs,
+		}
+	)
+	if defer:
+		log.deferred_insert()
+		return log
+	return log.insert(ignore_permissions=True)
