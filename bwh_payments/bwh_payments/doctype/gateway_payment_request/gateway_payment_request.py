@@ -3,10 +3,10 @@
 
 import frappe
 from frappe import _
-from frappe.integrations.utils import create_request_log
 from frappe.model.document import Document
 from frappe.utils.data import cstr, flt
 
+from bwh_payments.bwh_payments.utils import create_request_log
 from bwh_payments.currency import get_minor_unit_exponent
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
@@ -208,25 +208,26 @@ class GatewayPaymentRequest(Document):
 				)
 			)
 
-		# ponytail: the intent log shares this transaction, so a crash between the gateway call and the
-		# commit still loses the record; reconcile from the storefront Orphaned Payments report. Committing
-		# it first would release the row lock above and re-open the double-refund window.
-		request_log = create_request_log(
-			{
+		# ponytail: nothing is recorded if the worker dies between the gateway call and the commit; reconcile
+		# from the storefront Orphaned Payments report. Logging before the call would need a commit, and a
+		# commit releases the row lock above and re-opens the double-refund window.
+		refund_log = {
+			"data": {
 				"gateway_payment_request": self.name,
 				"order_ref": self.order_ref,
 				"amount": amount,
 				"currency": self.currency_code,
 			},
-			service_name=f"{self.gateway} Refund",
-			reference_doctype=self.doctype,
-			reference_docname=self.name,
-		)
+			"service_name": f"{self.gateway} Refund",
+			"reference_doctype": self.doctype,
+			"reference_docname": self.name,
+		}
 
 		try:
 			result = self.get_gateway_settings().refund_payment(self.order_ref, amount, self.currency_code)
 		except Exception:
-			request_log.db_set("status", "Failed", update_modified=False)
+			# The caller rolls this transaction back on the error, so the failure is queued outside it.
+			create_request_log(**refund_log, status="Failed", defer=True)
 			raise
 
 		self.append_refund_id((result or {}).get("refund_id"))
@@ -236,7 +237,7 @@ class GatewayPaymentRequest(Document):
 			self.append_refunded_payment_entry(payment_entry)
 		self.save(ignore_permissions=True)
 
-		request_log.db_set("status", "Completed", update_modified=False)
+		create_request_log(**refund_log, status="Completed")
 		return self.get_refund_ledger()
 
 	def get_refund_ledger(self) -> dict:

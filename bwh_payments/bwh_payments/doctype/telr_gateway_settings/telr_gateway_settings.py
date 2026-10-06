@@ -7,12 +7,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
-from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
+from frappe.integrations.utils import make_get_request, make_post_request
 from frappe.model.document import Document
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import PaymentGatewayBase
-from bwh_payments.bwh_payments.utils import get_localised_url
+from bwh_payments.bwh_payments.utils import create_request_log, get_localised_url
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 
 # ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Telr call holds a worker;
@@ -228,6 +228,8 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 			output=output,
 			error=error,
 			status="Failed" if error else "Completed",
+			# A failed call is followed by a rollback, so its record is queued outside the transaction.
+			defer=bool(error),
 		)
 
 

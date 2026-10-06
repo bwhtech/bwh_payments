@@ -4,12 +4,13 @@
 from unittest.mock import patch
 
 import frappe
+from frappe.deferred_insert import save_to_db as save_deferred_inserts
 from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
 from bwh_payments.bwh_payments.doctype.stripe_gateway_settings import stripe_gateway_settings
 from bwh_payments.currency import to_minor_units
-from bwh_payments.tests.fake_stripe import FakeStripeClient
+from bwh_payments.tests.fake_stripe import FakeRefundService, FakeStripeClient
 
 GATEWAY = "Stripe Test Gateway"
 WEBHOOK_SECRET = "whsec_test_secret"
@@ -57,8 +58,8 @@ def remove_stripe_gateway():
 	run leaves the dev site with an enabled gateway backed by a fake `sk_test_x` key, which the storefront
 	then offers shoppers at checkout.
 
-	The requests have to go too: `frappe.integrations.utils.create_request_log` commits, so every refund
-	test escapes the rollback and pins its Gateway Payment Request to the site for good.
+	The requests have to go too: the refund lock tests commit theirs so a second connection can see it, which
+	pins that Gateway Payment Request to the site for good.
 	"""
 	for request_name in frappe.get_all("Gateway Payment Request", filters={"gateway": GATEWAY}, pluck="name"):
 		frappe.delete_doc(
@@ -289,6 +290,69 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		payment_request.reload()
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 		self.assertIsNone(payment_request.refund_id)
+
+	def test_the_ledger_stays_locked_while_the_gateway_refunds(self):
+		"""A second refund has to wait for this one. Once the row lock is released before the gateway call,
+		a concurrent refund reads the old refund_amount, passes the over-refund guard and refunds again."""
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		# Committed so the second connection can see the row; the lock is then the only thing in its way.
+		frappe.db.commit()
+
+		lock_held_during_refund = []
+		create_refund = FakeRefundService.create
+
+		def create_refund_while_probing_the_lock(service, params):
+			lock_held_during_refund.append(not self.can_lock_from_another_connection(payment_request.name))
+			return create_refund(service, params)
+
+		with patch.object(FakeRefundService, "create", create_refund_while_probing_the_lock):
+			payment_request.refund(40)
+
+		self.assertEqual(lock_held_during_refund, [True])
+
+	def test_a_failed_gateway_refund_is_recorded_after_the_rollback(self):
+		"""The failure is the record an operator reconciles against, so it has to outlive the rollback that
+		the error triggers. It used to stay Queued, because the Failed update was rolled back."""
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		frappe.db.commit()
+		FakeStripeClient.next_refund_status = "failed"
+
+		with self.assertRaises(frappe.ValidationError):
+			payment_request.refund(50)
+		# What the request handler does with the error.
+		frappe.db.rollback()
+		save_deferred_inserts("Integration Request")
+
+		statuses = frappe.get_all(
+			"Integration Request",
+			filters={
+				"integration_request_service": f"{GATEWAY} Refund",
+				"reference_docname": payment_request.name,
+			},
+			pluck="status",
+		)
+		self.assertEqual(statuses, ["Failed"])
+
+	def can_lock_from_another_connection(self, payment_request_name: str) -> bool:
+		# On its first use secondary_connection() captures the connection to restore *after* opening the
+		# second one, so it leaves the second one active. Put the refund back on its own connection.
+		primary = frappe.local.db
+		try:
+			with self.secondary_connection():
+				try:
+					frappe.db.get_value(
+						"Gateway Payment Request", payment_request_name, "name", for_update=True, wait=False
+					)
+				except frappe.QueryTimeoutError:
+					return False
+				finally:
+					# Never hold the lock past the probe: the refund under test is waiting to save this row.
+					frappe.db.rollback()
+			return True
+		finally:
+			frappe.local.db = primary
 
 	# --- polled status ----------------------------------------------------
 
