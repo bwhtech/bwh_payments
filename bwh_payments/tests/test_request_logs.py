@@ -41,4 +41,4 @@ class TestGatewayRequestLogs(IntegrationTestCase):
 				self.assertEqual(statuses, ["Failed"])
 				# Committed by the flush above, so remove it by hand.
 				frappe.db.delete("Integration Request", {"data": ["like", f"%{endpoint}%"]})
-				frappe.db.commit()
+				frappe.db.commit()  # nosemgrep

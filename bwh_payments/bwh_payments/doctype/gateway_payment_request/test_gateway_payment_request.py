@@ -297,7 +297,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 		# Committed so the second connection can see the row; the lock is then the only thing in its way.
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep
 
 		lock_held_during_refund = []
 		create_refund = FakeRefundService.create
@@ -316,7 +316,8 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		the error triggers. It used to stay Queued, because the Failed update was rolled back."""
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
-		frappe.db.commit()
+		# Committed so the request outlives the rollback below; the deferred Failed log links to it.
+		frappe.db.commit()  # nosemgrep
 		FakeStripeClient.next_refund_status = "failed"
 
 		with self.assertRaises(frappe.ValidationError):
