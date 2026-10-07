@@ -8,6 +8,7 @@ from bwh_payments.base_class import WebhookEvent
 WEBHOOK_ACCEPTED = {"status": "ok"}
 
 
+# nosemgrep: guest-whitelisted-method  # gateways post unauthenticated; each verifier checks the signature
 @frappe.whitelist(allow_guest=True, methods=["POST"])
 @rate_limit(limit=120, seconds=60, ip_based=True)
 def handle():
