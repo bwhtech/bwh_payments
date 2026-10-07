@@ -7,17 +7,15 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
-from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
 from frappe.model.document import Document
 from frappe.utils.data import flt
 
-from bwh_payments.base_class import PaymentGatewayBase
+from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
 from bwh_payments.bwh_payments.utils import get_localised_url
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
-
-# ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Tabby call holds a worker;
-# revisit if Tabby latency ever shows up in the request log.
-TABBY_BASE_URL = "https://api.tabby.ai"
+from bwh_payments.services.tabby.base import BaseTabbyClient, TabbyCheckout, TabbyConfiguration, TabbyPayment
+from bwh_payments.services.tabby.live import LiveTabbyClient
+from bwh_payments.services.tabby.stub import StubTabbyClient
 
 # Tabby only underwrites in these markets, and a merchant code is tied to one of them. Sending anything
 # else is a 400 the shopper sees as a broken checkout, so it is refused before the call is made.
@@ -74,12 +72,10 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 	def get_gateway_name(self) -> str:
 		return "Tabby"
 
-	def get_headers(self) -> dict:
-		return {
-			"Authorization": f"Bearer {self.get_password('key_secret')}",
-			"Content-Type": "application/json",
-			"X-Merchant-Code": self.merchant_code,
-		}
+	def get_client(self) -> BaseTabbyClient:
+		if frappe.in_test:
+			return StubTabbyClient()
+		return LiveTabbyClient(self.get_password("key_secret"), self.merchant_code)
 
 	def create_session(
 		self,
@@ -87,7 +83,7 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		currency: str,
 		reference: str | None = None,
 		customer: dict | None = None,
-	) -> dict:
+	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
 		validate_tabby_currency(currency)
@@ -112,24 +108,24 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 			"merchant_urls": merchant_urls,
 		}
 
-		checkout = self.post("/api/v2/checkout", payload)
+		checkout = self.get_client().create_checkout(payload)
 		redirect_url = get_installments_url(checkout)
 
 		# The *payment* id, not the top-level checkout id: `GET /payments/{id}`, the capture and refund
 		# endpoints and the webhook body all key on the payment, and `webhook.handle` matches this value
 		# against `order_ref` byte-for-byte. The checkout id is the obvious wrong choice and is unusable
 		# everywhere else.
-		session_id = ((checkout.get("payment") or {}).get("id")) or ""
+		session_id = checkout.payment.id if checkout.payment else None
 		if not session_id:
 			frappe.throw(_("Tabby returned a checkout without a payment id"))
 
-		return {
-			"session_id": session_id,
-			"redirect_url": redirect_url,
-			"success_url": merchant_urls["success"],
-			"cancel_url": merchant_urls["cancel"],
-			"failure_url": merchant_urls["failure"],
-		}
+		return CheckoutSession(
+			session_id=session_id,
+			redirect_url=redirect_url,
+			success_url=merchant_urls["success"],
+			cancel_url=merchant_urls["cancel"],
+			failure_url=merchant_urls["failure"],
+		)
 
 	def build_return_url(self, url: str, label: str, reference: str | None) -> str:
 		"""Tabby only appends `?payment_id=...` on return, so the shopper carries our request name back."""
@@ -141,20 +137,20 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		query.append(("reference_id", reference or ""))
 		return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
-	def get_payment(self, session_id: str) -> dict:
-		return self.get_resource(f"/api/v2/payments/{session_id}")
-
 	def get_payment_status(self, session_id: str) -> str:
-		payment = self.get_payment(session_id)
-		status = read_status(payment)
+		client = self.get_client()
+		payment = client.get_payment(session_id)
+		status = read_status(payment.status)
 
 		if status == TABBY_AUTHORISED_STATUS:
-			payment = self.capture_payment(session_id, payment)
-			status = read_status(payment)
+			payment = self.capture_payment(client, session_id, payment)
+			status = read_status(payment.status)
 
 		return TABBY_STATUS_MAP.get(status, "Pending")
 
-	def capture_payment(self, session_id: str, payment: dict) -> dict:
+	def capture_payment(
+		self, client: BaseTabbyClient, session_id: str, payment: TabbyPayment
+	) -> TabbyPayment:
 		"""Take the money Tabby has only authorised, and return the payment as it stands afterwards.
 
 		This is where the shopper is actually charged: an authorised Tabby payment is approved credit and
@@ -164,12 +160,11 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		"""
 		# The authorisation's own amount, never an argument: a capture can then never exceed what Tabby
 		# approved, whatever the caller believes the order is worth.
-		currency = payment.get("currency") or self.currency
-		amount = format_tabby_amount(payment.get("amount"), currency)
-		self.post(f"/api/v2/payments/{session_id}/captures", {"amount": amount})
-		return self.get_payment(session_id)
+		currency = payment.currency or self.currency
+		client.capture_payment(session_id, format_tabby_amount(payment.amount, currency))
+		return client.get_payment(session_id)
 
-	def handle_webhook(self, payload: bytes, headers: dict) -> dict:
+	def handle_webhook(self, payload: bytes, headers: dict) -> WebhookEvent | None:
 		self.validate_webhook_source_ip()
 
 		webhook_secret = self.get_password("webhook_secret")
@@ -193,9 +188,9 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		try:
 			payment = frappe.parse_json(payload.decode())
 		except ValueError:
-			return {}
+			return None
 		if not isinstance(payment, dict):
-			return {}
+			return None
 
 		session_id = payment.get("id")
 		if not session_id:
@@ -204,11 +199,11 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		# ponytail: an `authorized` delivery is left Pending because capturing moves money and this path
 		# runs as Guest, so a shopper who authorises and never returns to the site is not charged until a
 		# status sync runs; add a scheduled sweep over Pending requests if abandoned returns show up.
-		return {
-			"session_id": session_id,
-			"status": TABBY_STATUS_MAP.get(read_status(payment), "Pending"),
-			"event_id": get_webhook_event_id(payment),
-		}
+		return WebhookEvent(
+			session_id=session_id,
+			status=TABBY_STATUS_MAP.get(read_status(payment.get("status")), "Pending"),
+			event_id=get_webhook_event_id(payment),
+		)
 
 	def validate_webhook_source_ip(self):
 		"""Defence in depth: the shared token is the only real check, so narrow who may even present it."""
@@ -218,10 +213,10 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		if frappe.local.request_ip not in allowed_ips:
 			frappe.throw(_("Tabby webhook came from an address that is not allowed"))
 
-	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> dict:
+	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
 		currency = currency or self.currency
-		payment = self.get_payment(session_id)
-		if read_status(payment) != TABBY_CAPTURED_STATUS:
+		client = self.get_client()
+		if read_status(client.get_payment(session_id).status) != TABBY_CAPTURED_STATUS:
 			# ponytail: only a captured payment is refundable — an authorised one has to be voided, and
 			# Tabby's void endpoint is not wired up here; add it if orders start being cancelled between
 			# authorisation and capture.
@@ -234,71 +229,12 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 
 		# Tabby answers a refund with the updated payment, not with a refund object, so the refund it just
 		# created is the last entry on the payment's ledger.
-		updated_payment = self.post(
-			f"/api/v2/payments/{session_id}/refunds", {"amount": format_tabby_amount(amount, currency)}
-		)
-		refunds = updated_payment.get("refunds") or []
+		refunds = client.refund_payment(session_id, format_tabby_amount(amount, currency)).refunds or []
 		if not refunds:
 			frappe.throw(_("Tabby accepted the refund but returned no refund record"))
 
 		# Tabby reports no per-refund status; a refund it accepted and echoed back has succeeded.
-		return {"refund_id": refunds[-1].get("id"), "status": "succeeded", "amount": flt(amount)}
-
-	def post(self, endpoint: str, payload: dict) -> dict:
-		url = f"{TABBY_BASE_URL}{endpoint}"
-		try:
-			response = make_post_request(url, json=payload, headers=self.get_headers())
-		except Exception as exception:
-			self.throw_request_error(url, exception)
-			# throw_request_error always raises today; the bare raise keeps `response` from ever being
-			# read unbound if that stops being true.
-			raise
-
-		return self.read_response(url, response)
-
-	def get_resource(self, endpoint: str) -> dict:
-		url = f"{TABBY_BASE_URL}{endpoint}"
-		try:
-			response = make_get_request(url, headers=self.get_headers())
-		except Exception as exception:
-			self.throw_request_error(url, exception)
-			# throw_request_error always raises today; the bare raise keeps `response` from ever being
-			# read unbound if that stops being true.
-			raise
-
-		return self.read_response(url, response)
-
-	def throw_request_error(self, url: str, exception: Exception):
-		"""Tabby explains a non-2xx in a JSON error body, so the status code alone never names it."""
-		description = read_tabby_error(exception)
-		self.log_request(url, error=description or exception)
-		frappe.throw(_("Tabby rejected the request: {0}").format(description or _("unknown error")))
-
-	def read_response(self, url: str, response) -> dict:
-		if not isinstance(response, dict):
-			self.log_request(url, error="Tabby returned a non-JSON body")
-			frappe.throw(_("Tabby returned an unreadable response"))
-
-		if error := response.get("errorType"):
-			self.log_request(url, error=response.get("error") or error)
-			frappe.throw(_("Tabby rejected the request: {0}").format(response.get("error") or error))
-
-		self.log_request(url, output=summarise_tabby_payment(response))
-		return response
-
-	def log_request(self, url: str, output=None, error=None):
-		# The headers carry the Bearer secret and the payload carries the shopper's name, phone and
-		# address, so only the endpoint and the outcome are logged.
-		create_request_log(
-			{"endpoint": url},
-			service_name="Tabby",
-			is_remote_request=True,
-			reference_doctype=self.doctype,
-			reference_docname=self.name,
-			output=output,
-			error=error,
-			status="Failed" if error else "Completed",
-		)
+		return RefundResult(refund_id=refunds[-1].id, status="succeeded", amount=flt(amount))
 
 
 def validate_tabby_currency(currency: str):
@@ -320,9 +256,9 @@ def format_tabby_amount(amount, currency: str) -> str:
 	return f"{flt(amount, exponent):.{exponent}f}"
 
 
-def read_status(payment: dict) -> str:
+def read_status(status: str | None) -> str:
 	"""Tabby's status is lowercase, but normalising once keeps a stray " Closed " from slipping past."""
-	return ((payment or {}).get("status") or "").strip().casefold()
+	return (status or "").strip().casefold()
 
 
 def get_buyer_details(customer: dict) -> dict:
@@ -348,43 +284,26 @@ def get_shipping_address(customer: dict) -> dict:
 	return {key: value for key, value in details.items() if value}
 
 
-def get_installments_url(checkout: dict) -> str:
+def get_installments_url(checkout: TabbyCheckout) -> str:
 	"""Return the hosted checkout URL, or explain the refusal in words a shopper can act on."""
-	configuration = checkout.get("configuration") or {}
+	configuration = checkout.configuration or TabbyConfiguration()
 	# `available_products` holds a *list* of installment plans, while `products` holds an object carrying
 	# the rejection reason. Indexing the list unguarded shows a declined shopper a raw traceback.
-	installments = ((configuration.get("available_products") or {}).get("installments")) or []
-	if read_status(checkout) == TABBY_REJECTED_STATUS or not installments:
+	available_products = configuration.available_products
+	installments = (available_products.installments if available_products else None) or []
+	if read_status(checkout.status) == TABBY_REJECTED_STATUS or not installments:
 		throw_rejection(configuration)
 
-	web_url = (installments[0] or {}).get("web_url")
+	web_url = installments[0].web_url
 	if not web_url:
 		throw_rejection(configuration)
 	return web_url
 
 
-def throw_rejection(configuration: dict):
-	products = configuration.get("products") or {}
-	reason = ((products.get("installments") or {}).get("rejection_reason") or "").strip().casefold()
+def throw_rejection(configuration: TabbyConfiguration):
+	product_status = configuration.products.installments if configuration.products else None
+	reason = ((product_status.rejection_reason if product_status else None) or "").strip().casefold()
 	frappe.throw(_(TABBY_REJECTION_MESSAGES.get(reason, DEFAULT_REJECTION_MESSAGE)), title=_("Tabby"))
-
-
-def summarise_tabby_payment(response: dict) -> dict:
-	"""Tabby echoes the shopper's name, phone and address, so only the ids are logged."""
-	# A checkout nests the payment; every other endpoint answers with the payment itself.
-	payment = response.get("payment") or response
-	return {"id": payment.get("id"), "status": response.get("status")}
-
-
-def read_tabby_error(exception: Exception) -> str | None:
-	response = getattr(exception, "response", None)
-	if response is None:
-		return None
-	try:
-		body = response.json()
-	except ValueError:
-		return None
-	return (body or {}).get("error") or (body or {}).get("errorType")
 
 
 def get_webhook_event_id(payment: dict) -> str:
