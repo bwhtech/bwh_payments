@@ -52,8 +52,9 @@ a gateway without touching this app.
 
 Every external service sits behind a client in `bwh_payments/services/<service>/`:
 
-- `base.py`: an ABC of the calls the controller makes, plus pydantic models that mirror the service's own
-  JSON (only the fields we read, `extra="ignore"`, optional where the service sends null).
+- `base.py`: an ABC of the calls the controller makes, plus models that mirror the service's own JSON. They
+  subclass `bwh_payments.services.GatewayModel`, which ignores unknown fields and reads bare numbers into
+  `str` fields. They keep only the fields we read, and are optional wherever the service sends null.
 - `live.py`: the transport. It makes the HTTP or SDK call, logs it with `create_request_log` (endpoint and
   ids only, never payloads), turns a refusal into `frappe.ValidationError`, and parses the response into the
   model. It holds no business decisions. Live clients are not tested, so anything that branches on payment
@@ -73,7 +74,7 @@ To add a service, copy `services/razorpay/` and wire `get_client()` the same way
 ### Public API for other apps
 
 `bwh_payments/api.py` is the supported import surface: `create_payment(ref_doctype, ref_docname, amount,
-currency, gateway, **fields)`, `get_payment_gateways`, `resolve_payment_mode`, `to_minor_units`,
+currency, gateway, **fields)` (`fields` limited to `company` and `customer_*`), `get_payment_gateways`, `resolve_payment_mode`, `to_minor_units`,
 `from_minor_units`. It skips permission checks, so never whitelist it as it stands. When a request turns
 `Paid`, `on_update` calls `ref_doc.run_method("on_payment_authorized", "Completed")` once. This is the
 frappe/payments convention, so apps written for it settle orders unchanged.
@@ -123,7 +124,8 @@ frappe/payments convention, so apps written for it settle orders unchanged.
 ### Security conventions in `webhook.py`
 
 Every verification failure returns the same opaque 400 (`reject()`), and `message_log` is cleared so a
-`frappe.throw` from a verifier does not leak. Do not log webhook payloads; they can contain cardholder
+`frappe.throw` from a verifier does not leak. A verified delivery that `WebhookEvent` cannot validate is a
+400 too, so the gateway retries it and it lands in the Error Log. Do not log webhook payloads; they can contain cardholder
 data. Every call is recorded as an Integration Request via `create_request_log`.
 
 ## Tests

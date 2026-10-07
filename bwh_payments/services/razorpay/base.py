@@ -1,20 +1,16 @@
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, ConfigDict
+from bwh_payments.services import GatewayModel
 
 # Models mirror Razorpay's JSON, keeping only the fields this app reads, so a live response parses as-is.
 
 
-class RazorpayPayment(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class RazorpayPayment(GatewayModel):
 	payment_id: str
 	status: str | None = None
 
 
-class RazorpayPaymentLink(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class RazorpayPaymentLink(GatewayModel):
 	id: str
 	status: str | None = None
 	short_url: str | None = None
@@ -22,9 +18,7 @@ class RazorpayPaymentLink(BaseModel):
 	payments: list[RazorpayPayment] | None = None
 
 
-class RazorpayRefund(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class RazorpayRefund(GatewayModel):
 	id: str
 	status: str | None = None
 	# Minor units, as Razorpay echoes it.

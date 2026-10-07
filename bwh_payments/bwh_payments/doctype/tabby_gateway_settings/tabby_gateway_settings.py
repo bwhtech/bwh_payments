@@ -73,9 +73,11 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		return "Tabby"
 
 	def get_client(self) -> BaseTabbyClient:
-		if frappe.in_test:
-			return StubTabbyClient()
-		return LiveTabbyClient(self.get_password("key_secret"), self.merchant_code)
+		return (
+			StubTabbyClient()
+			if frappe.in_test
+			else LiveTabbyClient(self.get_password("key_secret"), self.merchant_code)
+		)
 
 	def create_session(
 		self,

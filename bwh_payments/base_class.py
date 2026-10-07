@@ -12,10 +12,11 @@ class CheckoutSession(BaseModel):
 
 
 class RefundResult(BaseModel):
+	# Read after the money has moved, so nothing here may be required: a thin result must not strand it.
 	refund_id: str | None = None
-	status: str
+	status: str | None = None
 	# Major units, round-tripped from the gateway's own echo where it gives one.
-	amount: float
+	amount: float | None = None
 
 
 class WebhookEvent(BaseModel):

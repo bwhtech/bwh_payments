@@ -240,7 +240,7 @@ class GatewayPaymentRequest(Document):
 			request_log.db_set("status", "Failed", update_modified=False)
 			raise
 
-		self.append_refund_id(RefundResult.model_validate(result).refund_id)
+		self.append_refund_id(RefundResult.model_validate(result or {}).refund_id)
 		self.refund_amount = flt(flt(self.refund_amount, precision) + amount, precision)
 		self.status = self.resolve_refund_status()
 		if payment_entry:

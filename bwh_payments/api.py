@@ -2,6 +2,7 @@
 whitelist these as they stand."""
 
 import frappe
+from frappe import _
 
 from bwh_payments.bwh_payments.utils import get_available_payment_modes, resolve_payment_mode
 from bwh_payments.currency import from_minor_units, to_minor_units
@@ -26,6 +27,10 @@ def create_payment(
 	`company` or the `customer_*` details the gateway prefills. The referenced document's
 	`on_payment_authorized(status)` runs once the payment is Paid.
 	"""
+	# The insert skips permissions, so a caller forwarding user input must not reach status or the ledger.
+	if blocked := [field for field in fields if field != "company" and not field.startswith("customer_")]:
+		frappe.throw(_("create_payment cannot set {0}").format(", ".join(sorted(blocked))))
+
 	return frappe.get_doc(
 		{
 			"doctype": "Gateway Payment Request",

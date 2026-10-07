@@ -39,10 +39,9 @@ def handle():
 		log_webhook(gateway, status="Completed")
 		return WEBHOOK_ACCEPTED
 
-	session_id, status, event_id = event.session_id, event.status, event.event_id
-	request_name = frappe.db.get_value("Gateway Payment Request", {"order_ref": session_id}, "name")
+	request_name = frappe.db.get_value("Gateway Payment Request", {"order_ref": event.session_id}, "name")
 	if not request_name:
-		log_webhook(gateway, session_id=session_id, event_id=event_id, status="Failed")
+		log_webhook(gateway, session_id=event.session_id, event_id=event.event_id, status="Failed")
 		return WEBHOOK_ACCEPTED
 
 	payment_request = frappe.get_doc("Gateway Payment Request", request_name)
@@ -51,11 +50,11 @@ def handle():
 			title=f"{gateway} webhook gateway mismatch",
 			message=f"URL gateway: {gateway}, request gateway: {payment_request.gateway}",
 		)
-		log_webhook(gateway, session_id=session_id, event_id=event_id, status="Failed")
+		log_webhook(gateway, session_id=event.session_id, event_id=event.event_id, status="Failed")
 		return reject()
 
-	apply_status_as_administrator(payment_request, status, event_id)
-	log_webhook(gateway, session_id=session_id, event_id=event_id, status="Completed")
+	apply_status_as_administrator(payment_request, event.status, event.event_id)
+	log_webhook(gateway, session_id=event.session_id, event_id=event.event_id, status="Completed")
 	# A replayed delivery is still a success as far as the gateway is concerned; anything else and it
 	# keeps retrying forever.
 	return WEBHOOK_ACCEPTED

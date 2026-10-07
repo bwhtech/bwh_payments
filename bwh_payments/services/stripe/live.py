@@ -10,16 +10,16 @@ class LiveStripeClient(BaseStripeClient):
 		self.client = stripe.StripeClient(api_key)
 
 	def create_checkout_session(self, params: dict) -> StripeCheckoutSession:
-		return parse_session(self.client.checkout.sessions.create(params))
+		return parse_session(self.client.v1.checkout.sessions.create(params))
 
 	def retrieve_checkout_session(self, session_id: str) -> StripeCheckoutSession:
-		return parse_session(self.client.checkout.sessions.retrieve(session_id))
+		return parse_session(self.client.v1.checkout.sessions.retrieve(session_id))
 
 	def expire_checkout_session(self, session_id: str) -> StripeCheckoutSession:
-		return parse_session(self.client.checkout.sessions.expire(session_id))
+		return parse_session(self.client.v1.checkout.sessions.expire(session_id))
 
 	def create_refund(self, params: dict) -> StripeRefund:
-		return StripeRefund.model_validate(self.client.refunds.create(params), from_attributes=True)
+		return StripeRefund.model_validate(self.client.v1.refunds.create(params), from_attributes=True)
 
 
 def parse_session(session) -> StripeCheckoutSession:

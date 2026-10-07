@@ -4,6 +4,7 @@
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from bwh_payments.services.telr.base import TelrOrder
 from bwh_payments.services.telr.stub import StubTelrClient
 
 
@@ -82,3 +83,9 @@ class TestTelrGatewaySettings(IntegrationTestCase):
 			self.get_settings_with_remote_key().refund_payment(order_ref, 10, "AED")
 
 		self.assertEqual(StubTelrClient.refunds, [])
+
+	def test_a_numeric_order_ref_from_telr_is_read_as_text(self):
+		order = TelrOrder.model_validate({"ref": 1234567, "transaction": {"ref": 4002201}})
+
+		self.assertEqual(order.ref, "1234567")
+		self.assertEqual(order.transaction.ref, "4002201")

@@ -1,20 +1,16 @@
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, ConfigDict
+from bwh_payments.services import GatewayModel
 
 # Models mirror Tabby's JSON, keeping only the fields this app reads. Tabby leaves blocks out or sends
 # null freely, so every field is optional and the controller decides what a missing one means.
 
 
-class TabbyRefund(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyRefund(GatewayModel):
 	id: str | None = None
 
 
-class TabbyPayment(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyPayment(GatewayModel):
 	id: str | None = None
 	status: str | None = None
 	# A major-unit decimal string, though Tabby has been seen to send a bare number.
@@ -23,40 +19,28 @@ class TabbyPayment(BaseModel):
 	refunds: list[TabbyRefund] | None = None
 
 
-class TabbyInstallmentPlan(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyInstallmentPlan(GatewayModel):
 	web_url: str | None = None
 
 
-class TabbyAvailableProducts(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyAvailableProducts(GatewayModel):
 	installments: list[TabbyInstallmentPlan] | None = None
 
 
-class TabbyProductStatus(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyProductStatus(GatewayModel):
 	rejection_reason: str | None = None
 
 
-class TabbyProducts(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyProducts(GatewayModel):
 	installments: TabbyProductStatus | None = None
 
 
-class TabbyConfiguration(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyConfiguration(GatewayModel):
 	available_products: TabbyAvailableProducts | None = None
 	products: TabbyProducts | None = None
 
 
-class TabbyCheckout(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TabbyCheckout(GatewayModel):
 	id: str | None = None
 	status: str | None = None
 	payment: TabbyPayment | None = None

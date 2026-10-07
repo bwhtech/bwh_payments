@@ -59,9 +59,11 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		return "Telr"
 
 	def get_client(self) -> BaseTelrClient:
-		if frappe.in_test:
-			return StubTelrClient()
-		return LiveTelrClient(self.store_id, self.get_password("auth_key"), bool(self.test_mode))
+		return (
+			StubTelrClient()
+			if frappe.in_test
+			else LiveTelrClient(self.store_id, self.get_password("auth_key"), bool(self.test_mode))
+		)
 
 	@frappe.whitelist()
 	def get_account_information(self):

@@ -1,13 +1,11 @@
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, ConfigDict
+from bwh_payments.services import GatewayModel
 
 # Models mirror Stripe's objects, keeping only the fields this app reads.
 
 
-class StripeCheckoutSession(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class StripeCheckoutSession(GatewayModel):
 	id: str
 	url: str | None = None
 	status: str | None = None
@@ -18,9 +16,7 @@ class StripeCheckoutSession(BaseModel):
 	cancel_url: str | None = None
 
 
-class StripeRefund(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class StripeRefund(GatewayModel):
 	id: str
 	status: str | None = None
 	# Minor units, as Stripe echoes it.

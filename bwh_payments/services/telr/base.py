@@ -1,32 +1,26 @@
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, ConfigDict
+from bwh_payments.services import GatewayModel
 
 # Models mirror Telr's JSON, keeping only the fields this app reads.
 
 
-class TelrStatus(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TelrStatus(GatewayModel):
 	text: str | None = None
 
 
-class TelrTransaction(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TelrTransaction(GatewayModel):
 	ref: str | None = None
 
 
-class TelrOrder(BaseModel):
-	model_config = ConfigDict(extra="ignore")
-
+class TelrOrder(GatewayModel):
 	ref: str | None = None
 	url: str | None = None
 	status: TelrStatus | None = None
 	transaction: TelrTransaction | None = None
 
 
-class TelrRemoteResult(BaseModel):
+class TelrRemoteResult(GatewayModel):
 	"""The `<auth>` block of Telr's remote.xml reply. Status "A" means accepted."""
 
 	status: str | None = None

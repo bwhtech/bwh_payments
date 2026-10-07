@@ -284,6 +284,17 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 		self.assertIsNone(payment_request.refund_id)
 
+	def test_a_gateway_that_returns_no_refund_details_still_books_the_refund(self):
+		"""The result is read after the money has moved; a thin one must not strand the ledger."""
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		with patch.object(type(payment_request.get_gateway_settings()), "refund_payment", return_value=None):
+			payment_request.refund(40)
+
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+		self.assertEqual(payment_request.status, "Partially Refunded")
+
 	# --- polled status ----------------------------------------------------
 
 	def test_an_abandoned_session_is_released_and_expired_at_the_gateway(self):
@@ -391,6 +402,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(payment_request.status, "Pending")
 		self.assertTrue(payment_request.order_url)
 		self.assertEqual(payment_request.customer_email, "shopper@example.com")
+
+	def test_create_payment_refuses_fields_beyond_company_and_customer_details(self):
+		with self.assertRaises(frappe.ValidationError):
+			create_payment("Currency", "SAR", 100, "SAR", GATEWAY, status="Paid")
+
+		self.assertEqual(StubStripeClient.created_sessions, [])
 
 	# --- schema invariants ------------------------------------------------
 
