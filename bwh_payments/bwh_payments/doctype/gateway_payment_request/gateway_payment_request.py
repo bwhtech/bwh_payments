@@ -77,6 +77,14 @@ class GatewayPaymentRequest(Document):
 		if not self.order_ref:
 			self.create_session()
 
+	def on_update(self):
+		# Every path to Paid (webhook, poll, sweep) saves through here, so the referenced document hears it
+		# exactly once. The frappe/payments convention, so an app written for that settles orders unchanged.
+		if self.has_value_changed("status") and self.status == "Paid":
+			frappe.get_doc(self.ref_doctype, self.ref_docname).run_method(
+				"on_payment_authorized", "Completed"
+			)
+
 	def get_gateway_settings(self):
 		gateway_settings = frappe.get_cached_value(
 			"Payment Gateway Profile", self.gateway, "gateway_settings"

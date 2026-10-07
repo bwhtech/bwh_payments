@@ -4,9 +4,11 @@
 from unittest.mock import patch
 
 import frappe
+from frappe.geo.doctype.currency.currency import Currency
 from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
+from bwh_payments.api import create_payment
 from bwh_payments.bwh_payments.doctype.stripe_gateway_settings import stripe_gateway_settings
 from bwh_payments.currency import to_minor_units
 from bwh_payments.tests.fake_stripe import FakeStripeClient
@@ -367,6 +369,36 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertFalse(payment_request.apply_webhook_status("Refunded", "evt_1"))
 		self.assertEqual(payment_request.status, "Pending")
+
+	# --- reference document callback ---------------------------------------
+
+	def test_the_referenced_document_hears_about_a_payment_once(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		with patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized:
+			payment_request.apply_webhook_status("Paid", "evt_1")
+			payment_request.sync_status()
+
+		on_payment_authorized.assert_called_once_with("Completed")
+
+	def test_a_payment_that_did_not_settle_is_not_announced(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		with patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized:
+			payment_request.apply_webhook_status("Cancelled", "evt_1")
+
+		on_payment_authorized.assert_not_called()
+
+	# --- public api -------------------------------------------------------
+
+	def test_create_payment_opens_a_checkout_for_the_document(self):
+		payment_request = create_payment(
+			"Currency", "SAR", 100, "SAR", GATEWAY, customer_email="shopper@example.com"
+		)
+
+		self.assertEqual(payment_request.status, "Pending")
+		self.assertTrue(payment_request.order_url)
+		self.assertEqual(payment_request.customer_email, "shopper@example.com")
 
 	# --- schema invariants ------------------------------------------------
 
