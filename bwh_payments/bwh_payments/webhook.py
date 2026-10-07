@@ -3,6 +3,8 @@ from frappe import _
 from frappe.integrations.utils import create_request_log
 from frappe.rate_limiter import rate_limit
 
+from bwh_payments.base_class import WebhookEvent
+
 WEBHOOK_ACCEPTED = {"status": "ok"}
 
 
@@ -24,25 +26,20 @@ def handle():
 	headers = dict(frappe.request.headers)
 
 	try:
-		result = frappe.get_single(profile.gateway_settings).handle_webhook(payload, headers)
+		event = frappe.get_single(profile.gateway_settings).handle_webhook(payload, headers)
+		# Inside the try: a verified delivery the gateway could not turn into an event is still a 400.
+		event = WebhookEvent.model_validate(event) if event else None
 	except Exception:
 		# The payload can carry cardholder data, so only the gateway and the traceback are recorded.
 		frappe.log_error(title=f"{gateway} webhook verification failed")
 		log_webhook(gateway, status="Failed")
 		return reject()
 
-	if not result:
+	if not event:
 		log_webhook(gateway, status="Completed")
 		return WEBHOOK_ACCEPTED
 
-	session_id = result.get("session_id")
-	status = result.get("status")
-	event_id = result.get("event_id")
-
-	if not (session_id and status):
-		log_webhook(gateway, event_id=event_id, status="Failed")
-		return WEBHOOK_ACCEPTED
-
+	session_id, status, event_id = event.session_id, event.status, event.event_id
 	request_name = frappe.db.get_value("Gateway Payment Request", {"order_ref": session_id}, "name")
 	if not request_name:
 		log_webhook(gateway, session_id=session_id, event_id=event_id, status="Failed")

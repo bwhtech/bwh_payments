@@ -7,19 +7,16 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
-from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
 from frappe.model.document import Document
 from frappe.utils import validate_email_address
 from frappe.utils.data import flt
 
-from bwh_payments.base_class import PaymentGatewayBase
+from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
 from bwh_payments.bwh_payments.utils import get_localised_url
 from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
-
-# ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Razorpay call holds a
-# worker; revisit if Razorpay latency ever shows up in the request log.
-RAZORPAY_BASE_URL = "https://api.razorpay.com/v1"
-RAZORPAY_HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
+from bwh_payments.services.razorpay.base import BaseRazorpayClient, RazorpayPaymentLink
+from bwh_payments.services.razorpay.live import LiveRazorpayClient
+from bwh_payments.services.razorpay.stub import StubRazorpayClient
 
 # Anything unrecognised stays Pending: never terminal, and never Paid, so an unmapped Razorpay state can
 # neither release goods nor cancel a live order. Only values the webhook/poll path may write appear here.
@@ -68,8 +65,10 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 	def get_gateway_name(self) -> str:
 		return "Razorpay"
 
-	def get_auth(self) -> tuple[str, str]:
-		return (self.key_id, self.get_password("key_secret"))
+	def get_client(self) -> BaseRazorpayClient:
+		if frappe.in_test:
+			return StubRazorpayClient()
+		return LiveRazorpayClient(self.key_id, self.get_password("key_secret"))
 
 	def create_session(
 		self,
@@ -77,7 +76,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		currency: str,
 		reference: str | None = None,
 		customer: dict | None = None,
-	) -> dict:
+	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
 
@@ -101,16 +100,16 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		if customer_details := get_customer_details(customer or {}):
 			payload["customer"] = customer_details
 
-		link = self.post("/payment_links", payload)
+		link = self.get_client().create_payment_link(payload)
 		# A Payment Link carries a single callback, so Razorpay has no cancel or failure redirect of its
 		# own; the storefront gets ours instead, which is what the shopper would have landed on anyway.
-		return {
-			"session_id": link["id"],
-			"redirect_url": link["short_url"],
-			"success_url": payload["callback_url"],
-			"cancel_url": get_localised_url(self.cancelled_url),
-			"failure_url": get_localised_url(self.failure_url),
-		}
+		return CheckoutSession(
+			session_id=link.id,
+			redirect_url=link.short_url,
+			success_url=payload["callback_url"],
+			cancel_url=get_localised_url(self.cancelled_url),
+			failure_url=get_localised_url(self.failure_url),
+		)
 
 	def build_success_url(self, reference: str | None) -> str:
 		"""Razorpay's callback names its parameter `razorpay_payment_link_reference_id`, but the
@@ -123,14 +122,11 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		query.append(("reference_id", reference or ""))
 		return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
-	def get_payment_link(self, session_id: str) -> dict:
-		return self.get_resource(f"/payment_links/{session_id}")
-
 	def get_payment_status(self, session_id: str) -> str:
-		payment_link = self.get_payment_link(session_id)
+		payment_link = self.get_client().get_payment_link(session_id)
 		# Normalised once: reading the raw field again below would let a " Created " past the map but not
 		# past the eligibility check, so the two reads have to agree.
-		link_status = (payment_link.get("status") or "").strip().casefold()
+		link_status = (payment_link.status or "").strip().casefold()
 		status = RAZORPAY_LINK_STATUS_MAP.get(link_status, "Pending")
 		if status != "Pending":
 			return status
@@ -149,7 +145,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 		return status
 
-	def handle_webhook(self, payload: bytes, headers: dict) -> dict:
+	def handle_webhook(self, payload: bytes, headers: dict) -> WebhookEvent | None:
 		webhook_secret = self.get_password("webhook_secret")
 		if not webhook_secret:
 			frappe.throw(_("Webhook secret is not configured in Razorpay Gateway Settings"))
@@ -175,7 +171,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		# parse_json passes bytes straight through untouched, so the body is decoded first.
 		event = frappe.parse_json(payload.decode())
 		if event.get("event") != RAZORPAY_PAID_EVENT:
-			return {}
+			return None
 
 		payment_link = ((event.get("payload") or {}).get("payment_link") or {}).get("entity") or {}
 		session_id = payment_link.get("id")
@@ -190,86 +186,29 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 		# The payment link id, not the payment id: `order_ref` holds the link id, and the webhook handler
 		# matches on it byte-for-byte.
-		return {"session_id": session_id, "status": status, "event_id": event_id}
+		return WebhookEvent(session_id=session_id, status=status, event_id=event_id)
 
 	def cancel_session(self, session_id: str) -> bool:
 		try:
-			link = self.post(f"/payment_links/{session_id}/cancel", {})
+			link = self.get_client().cancel_payment_link(session_id)
 		except frappe.ValidationError:
 			return False
 
-		return (link.get("status") or "").strip().casefold() == RAZORPAY_CANCELLED_STATUS
+		return (link.status or "").strip().casefold() == RAZORPAY_CANCELLED_STATUS
 
-	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> dict:
+	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
 		currency = currency or self.currency
-		payment_id = get_captured_payment_id(self.get_payment_link(session_id))
+		client = self.get_client()
+		payment_id = get_captured_payment_id(client.get_payment_link(session_id))
 
-		refund = self.post(f"/payments/{payment_id}/refund", {"amount": to_minor_units(amount, currency)})
-		if refund.get("status") not in RAZORPAY_ACCEPTED_REFUND_STATUSES:
-			frappe.throw(_("Refund failed with status: {0}").format(refund.get("status")))
+		refund = client.create_refund(payment_id, to_minor_units(amount, currency))
+		if refund.status not in RAZORPAY_ACCEPTED_REFUND_STATUSES:
+			frappe.throw(_("Refund failed with status: {0}").format(refund.status))
 
 		# The gateway's own echo is round-tripped back to major units so a charge and its refund always
 		# agree to the last minor unit.
-		return {
-			"refund_id": refund["id"],
-			"status": refund["status"],
-			"amount": flt(from_minor_units(refund["amount"], currency)),
-		}
-
-	def post(self, endpoint: str, payload: dict) -> dict:
-		url = f"{RAZORPAY_BASE_URL}{endpoint}"
-		try:
-			response = make_post_request(url, auth=self.get_auth(), json=payload, headers=RAZORPAY_HEADERS)
-		except Exception as exception:
-			self.throw_request_error(url, exception)
-			# throw_request_error always raises today; the bare raise keeps `response` from ever being
-			# read unbound if that stops being true.
-			raise
-
-		return self.read_response(url, response)
-
-	def get_resource(self, endpoint: str) -> dict:
-		url = f"{RAZORPAY_BASE_URL}{endpoint}"
-		try:
-			response = make_get_request(url, auth=self.get_auth(), headers=RAZORPAY_HEADERS)
-		except Exception as exception:
-			self.throw_request_error(url, exception)
-			# throw_request_error always raises today; the bare raise keeps `response` from ever being
-			# read unbound if that stops being true.
-			raise
-
-		return self.read_response(url, response)
-
-	def throw_request_error(self, url: str, exception: Exception):
-		"""Razorpay explains a non-2xx in a JSON error body, so the status code alone never names it."""
-		description = read_razorpay_error(exception)
-		self.log_request(url, error=description or exception)
-		frappe.throw(_("Razorpay rejected the request: {0}").format(description or _("unknown error")))
-
-	def read_response(self, url: str, response) -> dict:
-		if not isinstance(response, dict):
-			self.log_request(url, error="Razorpay returned a non-JSON body")
-			frappe.throw(_("Razorpay returned an unreadable response"))
-
-		if error := response.get("error"):
-			self.log_request(url, error=error.get("description") or error.get("code"))
-			frappe.throw(_("Razorpay rejected the request: {0}").format(error.get("description")))
-
-		self.log_request(url, output=summarise_razorpay_entity(response))
-		return response
-
-	def log_request(self, url: str, output=None, error=None):
-		# The request payload carries the API key and the shopper's contact details, so only the endpoint
-		# and the outcome are logged.
-		create_request_log(
-			{"endpoint": url},
-			service_name="Razorpay",
-			is_remote_request=True,
-			reference_doctype=self.doctype,
-			reference_docname=self.name,
-			output=output,
-			error=error,
-			status="Failed" if error else "Completed",
+		return RefundResult(
+			refund_id=refund.id, status=refund.status, amount=flt(from_minor_units(refund.amount, currency))
 		)
 
 
@@ -288,20 +227,20 @@ def get_customer_name(customer: dict) -> str:
 	return " ".join(part for part in (name.get("forenames"), name.get("surname")) if part)
 
 
-def has_authorised_payment(payment_link: dict) -> bool:
+def has_authorised_payment(payment_link: RazorpayPaymentLink) -> bool:
 	return any(
-		(payment.get("status") or "").strip().casefold() == RAZORPAY_AUTHORISED_STATUS
-		for payment in payment_link.get("payments") or []
+		(payment.status or "").strip().casefold() == RAZORPAY_AUTHORISED_STATUS
+		for payment in payment_link.payments or []
 	)
 
 
-def get_captured_payment_id(payment_link: dict) -> str:
+def get_captured_payment_id(payment_link: RazorpayPaymentLink) -> str:
 	"""A Payment Link is not a charge, so a refund has to go against the payment it collected."""
 	# ponytail: a request marked Paid through `treat_authorised_as_paid` holds an authorised-but-uncaptured
 	# payment and cannot be refunded here; capture it first, or refund it from the Razorpay dashboard.
-	for payment in payment_link.get("payments") or []:
-		if (payment.get("status") or "").strip().casefold() == RAZORPAY_CAPTURED_STATUS:
-			return payment["payment_id"]
+	for payment in payment_link.payments or []:
+		if (payment.status or "").strip().casefold() == RAZORPAY_CAPTURED_STATUS:
+			return payment.payment_id
 
 	frappe.throw(
 		_(
@@ -309,19 +248,3 @@ def get_captured_payment_id(payment_link: dict) -> str:
 			" refunded from the Razorpay dashboard."
 		)
 	)
-
-
-def summarise_razorpay_entity(response: dict) -> dict:
-	"""Razorpay echoes the shopper's name, email and phone number, so only the ids are logged."""
-	return {"id": response.get("id"), "status": response.get("status")}
-
-
-def read_razorpay_error(exception: Exception) -> str | None:
-	response = getattr(exception, "response", None)
-	if response is None:
-		return None
-	try:
-		body = response.json()
-	except ValueError:
-		return None
-	return ((body or {}).get("error") or {}).get("description")

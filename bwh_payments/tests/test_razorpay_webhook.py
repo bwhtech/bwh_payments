@@ -12,7 +12,7 @@ from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_g
 	RazorpayTestCase,
 	make_razorpay_payment_request,
 )
-from bwh_payments.tests.fake_razorpay import build_payment_link_paid_event, sign_razorpay_payload
+from bwh_payments.services.razorpay.stub import build_payment_link_event, sign_payload
 
 # No IGNORE_TEST_RECORD_DEPENDENCIES here: frappe only honours it inside a doctype folder and raises
 # NotImplementedError otherwise. Outside one it loads no test records at all, which is what we want.
@@ -50,9 +50,9 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_a_correctly_signed_event_marks_the_request_paid(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
-		response = self.post_webhook(payload, sign_razorpay_payload(payload, RAZORPAY_WEBHOOK_SECRET))
+		response = self.post_webhook(payload, sign_payload(payload, RAZORPAY_WEBHOOK_SECRET))
 
 		self.assertEqual(response["status"], "ok")
 		payment_request.reload()
@@ -60,9 +60,9 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_a_forged_signature_is_rejected_and_nothing_is_marked_paid(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
-		response = self.post_webhook(payload, sign_razorpay_payload(payload, "attacker_guess"))
+		response = self.post_webhook(payload, sign_payload(payload, "attacker_guess"))
 
 		self.assertEqual(response["status"], "error")
 		self.assertEqual(self.get_status_code(), 400)
@@ -71,7 +71,7 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_an_unsigned_delivery_is_rejected(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
 		response = self.post_webhook(payload, None)
 
@@ -82,8 +82,8 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_a_replayed_delivery_is_accepted_but_applied_once(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
-		signature = sign_razorpay_payload(payload, RAZORPAY_WEBHOOK_SECRET)
+		payload = build_payment_link_event(payment_request.order_ref)
+		signature = sign_payload(payload, RAZORPAY_WEBHOOK_SECRET)
 
 		self.post_webhook(payload, signature, event_id="evt_rzp_replay")
 		second = self.post_webhook(payload, signature, event_id="evt_rzp_replay")
@@ -96,7 +96,7 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 		self.assertEqual(payment_request.last_webhook_event_id, "evt_rzp_replay")
 
 	def test_a_rejection_does_not_echo_the_gateway_error_back_to_the_caller(self):
-		payload = build_payment_link_paid_event("plink_nothing")
+		payload = build_payment_link_event("plink_nothing")
 
 		self.post_webhook(payload, None)
 
@@ -104,9 +104,9 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_the_webhook_log_never_stores_the_raw_payload(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
-		self.post_webhook(payload, sign_razorpay_payload(payload, RAZORPAY_WEBHOOK_SECRET))
+		self.post_webhook(payload, sign_payload(payload, RAZORPAY_WEBHOOK_SECRET))
 
 		logged = frappe.get_all(
 			"Integration Request",
