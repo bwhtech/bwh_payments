@@ -13,8 +13,10 @@ dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
     # stripe_gateway_settings imports this at module level, so every install of a
-    # dependent app dies at import without it. StripeClient needs 11 or newer.
-    "stripe>=11,<16",
+    # dependent app dies at import without it. StripeClient.v1 needs 12.5 or newer.
+    "stripe>=12.5,<16",
+    # Gateway results and service-client responses are pydantic models. Frappe pins the exact version.
+    "pydantic>=2,<3",
 ]
 
 [build-system]
