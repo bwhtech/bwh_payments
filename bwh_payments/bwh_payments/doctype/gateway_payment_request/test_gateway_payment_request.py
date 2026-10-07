@@ -9,9 +9,8 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
 from bwh_payments.api import create_payment
-from bwh_payments.bwh_payments.doctype.stripe_gateway_settings import stripe_gateway_settings
 from bwh_payments.currency import to_minor_units
-from bwh_payments.tests.fake_stripe import FakeStripeClient
+from bwh_payments.services.stripe.stub import StubStripeClient
 
 GATEWAY = "Stripe Test Gateway"
 WEBHOOK_SECRET = "whsec_test_secret"
@@ -93,12 +92,7 @@ def make_payment_request(amount: float, currency: str = "SAR"):
 
 class TestGatewayPaymentRequest(IntegrationTestCase):
 	def setUp(self):
-		FakeStripeClient.reset()
-		self.stripe_client_patch = patch.object(
-			stripe_gateway_settings.stripe, "StripeClient", FakeStripeClient
-		)
-		self.stripe_client_patch.start()
-		self.addCleanup(self.stripe_client_patch.stop)
+		StubStripeClient.reset()
 		configure_stripe_gateway()
 
 	@classmethod
@@ -116,9 +110,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		frappe.clear_cache()
 
 	def mark_paid(self, payment_request):
-		FakeStripeClient.register_paid_session(
-			payment_request.order_ref, payment_request.currency_code.lower()
-		)
+		StubStripeClient.pay(payment_request.order_ref)
 		payment_request.db_set("status", "Paid", update_modified=False)
 		payment_request.reload()
 
@@ -129,7 +121,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.use_currency_number_format()
 		payment_request = make_payment_request(12.345, "KWD")
 
-		charged = FakeStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
+		charged = StubStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
 		self.assertEqual(charged, 12345)
 		self.assertNotEqual(charged, int(12.345 * 100))
 		self.assertTrue(payment_request.order_ref)
@@ -142,12 +134,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			make_payment_request(12.345, "KWD")
 
-		self.assertEqual(FakeStripeClient.created_sessions, [])
+		self.assertEqual(StubStripeClient.created_sessions, [])
 
 	def test_create_session_charges_iso_minor_units_for_a_zero_decimal_currency(self):
 		make_payment_request(1000, "JPY")
 
-		charged = FakeStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
+		charged = StubStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
 		self.assertEqual(charged, 1000)
 		self.assertNotEqual(charged, 1000 * 100)
 
@@ -167,12 +159,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 	def test_charge_and_refund_agree_on_the_minor_unit_conversion(self):
 		self.use_currency_number_format()
 		payment_request = make_payment_request(12.345, "KWD")
-		charged = FakeStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
+		charged = StubStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
 		self.mark_paid(payment_request)
 
 		payment_request.refund()
 
-		self.assertEqual(FakeStripeClient.created_refunds[-1]["amount"], charged)
+		self.assertEqual(StubStripeClient.created_refunds[-1]["amount"], charged)
 		self.assertEqual(to_minor_units(payment_request.refund_amount, "KWD"), charged)
 		self.assertEqual(payment_request.status, "Refunded")
 
@@ -190,7 +182,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(100)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 
 	def test_refund_id_is_appended_once_per_successful_partial(self):
 		payment_request = make_payment_request(100, "SAR")
@@ -209,12 +201,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 		payment_request.refund(60)
-		FakeStripeClient.created_refunds.clear()
+		StubStripeClient.created_refunds.clear()
 
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(41)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 		self.assertEqual(flt(payment_request.refund_amount), 60.0)
 
 	def test_an_omitted_amount_refunds_the_whole_remaining_balance(self):
@@ -235,7 +227,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(0.004)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 		payment_request.reload()
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 		self.assertEqual(payment_request.status, "Paid")
@@ -247,7 +239,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(0)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 
 	def test_a_residue_under_a_whole_unit_stays_refundable(self):
@@ -262,7 +254,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertEqual(flt(payment_request.refund_amount), 100.0)
 		self.assertEqual(payment_request.status, "Refunded")
-		self.assertEqual(FakeStripeClient.created_refunds[-1]["amount"], to_minor_units(0.99, "SAR"))
+		self.assertEqual(StubStripeClient.created_refunds[-1]["amount"], to_minor_units(0.99, "SAR"))
 
 	def test_a_whole_unit_left_is_still_only_partially_refunded(self):
 		payment_request = make_payment_request(100, "SAR")
@@ -278,12 +270,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(10)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 
 	def test_a_failed_gateway_refund_leaves_the_ledger_untouched(self):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
-		FakeStripeClient.next_refund_status = "failed"
+		StubStripeClient.next_refund_status = "failed"
 
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(50)
@@ -299,15 +291,15 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertTrue(payment_request.release_if_unpaid())
 		self.assertEqual(payment_request.status, "Cancelled")
-		self.assertEqual(FakeStripeClient.sessions[payment_request.order_ref]["status"], "expired")
+		self.assertEqual(StubStripeClient.sessions[payment_request.order_ref].status, "expired")
 
 	def test_a_paid_session_keeps_its_payment_and_is_never_expired(self):
 		payment_request = make_payment_request(100, "SAR")
-		FakeStripeClient.register_paid_session(payment_request.order_ref, "sar")
+		StubStripeClient.pay(payment_request.order_ref)
 
 		self.assertFalse(payment_request.release_if_unpaid())
 		self.assertEqual(payment_request.status, "Paid")
-		self.assertEqual(FakeStripeClient.sessions[payment_request.order_ref]["status"], "complete")
+		self.assertEqual(StubStripeClient.sessions[payment_request.order_ref].status, "complete")
 
 	def test_a_session_the_gateway_will_not_cancel_stays_pending(self):
 		payment_request = make_payment_request(100, "SAR")
