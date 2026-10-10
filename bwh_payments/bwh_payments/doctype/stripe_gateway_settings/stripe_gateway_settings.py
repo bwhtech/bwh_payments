@@ -41,7 +41,10 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		return "Stripe"
 
 	def get_client(self) -> BaseStripeClient:
-		return StubStripeClient() if frappe.in_test else LiveStripeClient(self.get_password("private_key"))
+		if frappe.in_test:
+			return StubStripeClient()
+
+		return LiveStripeClient(self.get_password("private_key"))
 
 	def create_session(
 		self,

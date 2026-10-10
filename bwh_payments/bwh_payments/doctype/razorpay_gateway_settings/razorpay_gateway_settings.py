@@ -66,11 +66,10 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		return "Razorpay"
 
 	def get_client(self) -> BaseRazorpayClient:
-		return (
-			StubRazorpayClient()
-			if frappe.in_test
-			else LiveRazorpayClient(self.key_id, self.get_password("key_secret"))
-		)
+		if frappe.in_test:
+			return StubRazorpayClient()
+
+		return LiveRazorpayClient(self.key_id, self.get_password("key_secret"))
 
 	def create_session(
 		self,
