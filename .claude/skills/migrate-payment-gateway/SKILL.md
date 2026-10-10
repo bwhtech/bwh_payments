@@ -62,6 +62,9 @@ stub that replaces the client under tests would accept forged events.
   fields, so an id the gateway sometimes sends as `1234567` still parses. Use nested models where the JSON
   nests, and `| None = None` wherever the gateway may omit a field or send null. Use
   `str | float | None` for amounts that arrive both as `100` and as `"100.00"`.
+- A model the controller reads after money has moved (a refund echo) has **no** required fields, not
+  even `id` or `amount`. If it fails to parse, the refund is never recorded and stays refundable, so a
+  retry refunds twice. The controller falls back to the requested amount when the echo has none.
 - The docstring on the ABC says what a refusal raises (`frappe.ValidationError`, or the SDK's own error
   type when the controller already catches that, as with Stripe).
 
@@ -74,6 +77,9 @@ state here, it belongs in the controller.
 - Credentials go in the constructor. A secret that is optional on the settings (Telr's `remote_auth_key`)
   goes as an argument to the one method that needs it. `get_password` raises when the field is empty,
   and `get_client()` runs on every call.
+- Turn every refusal into `frappe.ValidationError`, including a body that is not JSON: check
+  `isinstance(response, dict)` before reading it. Annotate the helper that throws
+  (`throw_request_error`) as `-> NoReturn`, so `response` after the `except` is never read unbound.
 - Log against the settings Single (`reference_doctype = reference_docname = "<Name> Gateway Settings"`).
   Log endpoints and ids only, never payloads: they carry keys and shopper contact details.
 - SDK objects: Stripe SDK 15 objects are attribute-based, not dicts, so parse with
@@ -104,6 +110,7 @@ An in-memory version of the gateway that behaves like it, not a mock that return
 def get_client(self) -> BaseXClient:
 	if frappe.in_test:
 		return StubXClient()
+
 	return LiveXClient(self.key_id, self.get_password("key_secret"))
 ```
 

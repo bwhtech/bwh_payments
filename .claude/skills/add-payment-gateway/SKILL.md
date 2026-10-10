@@ -61,7 +61,8 @@ Follow AGENTS.md "Service clients" and the migrate skill steps 3–5 for `base.p
 For a new provider:
 
 - `base.py` methods map one to one to the provider calls you listed in step 1. Model only the fields the
-  controller reads.
+  controller reads. Every field on the refund model is optional, `id` and `amount` included (see the
+  migrate skill, step 3).
 - `stub.py` must behave like the provider's real state machine for the paths you support: created, then
   paid or authorised, then captured, then refunded. Include the refusal paths (`next_refund_status`, a
   rejection control) and raise for unknown ids the way live does.
@@ -93,7 +94,8 @@ For a new provider:
     plain dict.
 - **`refund_payment(session_id, amount, currency)` → `RefundResult`** with `amount` in major units. The
   request reads only `refund_id`, and it reads it after the money has moved, so return what you have
-  rather than raising on a thin provider response.
+  rather than raising on a thin provider response. Use the provider's echoed amount when it sends one,
+  and the requested `amount` when it does not.
   Refuse when there is nothing captured to refund, and throw on any status that isn't an accepted one.
 - **`cancel_session(session_id)` → bool,** if the provider can cancel or expire a session. Return
   `False` instead of raising when the provider refuses.
