@@ -69,6 +69,9 @@ live one. There is no other switch, so a real site can never run on a stub. The 
 decision: currency conversion, URL building, status maps, capture and refund rules, and webhook signature
 checks. Signature checks are local crypto and must never move into a client a stub could replace.
 
+Live HTTP clients pass no timeout: `make_request` accepts one only from Frappe 17. Add it when Frappe 16
+support is dropped.
+
 To add a service, copy `services/razorpay/` and wire `get_client()` the same way.
 
 ### Public API for other apps
@@ -151,6 +154,7 @@ build a werkzeug `Request` into `frappe.local.request` and call `webhook.handle(
   type annotations. `export_python_type_annotations = True` regenerates the `# begin: auto-generated types`
   block in controllers on migrate; do not edit that block by hand.
 - `use_json_request_body = True`: non-GET calls to this app's endpoints send JSON bodies.
-- Deliberate shortcuts are marked with `# ponytail:` comments that name the limit and the upgrade path.
+- Keep comments rare: only for a non-obvious reason (security, money, a gateway quirk). Do not add
+  `# ponytail:` or similar marker comments.
 - `get_available_payment_modes` uses a per-worker `site_cache` (1 h TTL), so other workers can briefly
   keep offering a just-disabled gateway.

@@ -214,8 +214,6 @@ def has_authorised_payment(payment_link: RazorpayPaymentLink) -> bool:
 
 
 def get_captured_payment_id(payment_link: RazorpayPaymentLink) -> str:
-	# ponytail: a request marked Paid via `treat_authorised_as_paid` may be uncaptured and cannot be
-	# refunded here; capture it first, or refund from the Razorpay dashboard.
 	for payment in payment_link.payments or []:
 		if (payment.status or "").strip().casefold() == RAZORPAY_CAPTURED_STATUS:
 			return payment.payment_id

@@ -202,8 +202,7 @@ class GatewayPaymentRequest(Document):
 				)
 			)
 
-		# ponytail: the log shares this transaction, so a crash after the gateway call loses it; reconcile
-		# from the Orphaned Payments report. Committing first would drop the row lock.
+		# Not committed first: that would release the row lock.
 		request_log = create_request_log(
 			{
 				"gateway_payment_request": self.name,

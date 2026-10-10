@@ -6,8 +6,6 @@ from frappe.integrations.utils import create_request_log, make_get_request, make
 
 from bwh_payments.services.tabby.base import BaseTabbyClient, TabbyCheckout, TabbyPayment
 
-# ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Tabby call holds a worker;
-# revisit if Tabby latency ever shows up in the request log.
 TABBY_BASE_URL = "https://api.tabby.ai"
 SETTINGS_DOCTYPE = "Tabby Gateway Settings"
 

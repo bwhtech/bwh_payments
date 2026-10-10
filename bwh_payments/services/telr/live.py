@@ -7,8 +7,6 @@ from frappe.integrations.utils import create_request_log, make_get_request, make
 
 from bwh_payments.services.telr.base import BaseTelrClient, TelrOrder, TelrRemoteResult
 
-# ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Telr call holds a worker;
-# revisit if Telr latency ever shows up in the request log.
 TELR_BASE_URL = "https://secure.telr.com"
 SETTINGS_DOCTYPE = "Telr Gateway Settings"
 
@@ -128,8 +126,6 @@ def summarise_telr_order(response) -> dict:
 
 
 def read_telr_auth_response(response) -> TelrRemoteResult:
-	# ponytail: stdlib ElementTree is not hardened against XML entity attacks; the response comes from a
-	# pinned Telr host over TLS. Move to defusedxml if Telr is ever fronted by a customer-controlled host.
 	body = response if isinstance(response, str) else getattr(response, "text", "") or ""
 	try:
 		root = ElementTree.fromstring(body)

@@ -10,8 +10,6 @@ from bwh_payments.services.razorpay.base import (
 	RazorpayRefund,
 )
 
-# ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Razorpay call holds a
-# worker; revisit if Razorpay latency ever shows up in the request log.
 RAZORPAY_BASE_URL = "https://api.razorpay.com/v1"
 RAZORPAY_HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
 SETTINGS_DOCTYPE = "Razorpay Gateway Settings"

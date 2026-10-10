@@ -174,8 +174,7 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		if not session_id:
 			frappe.throw(_("Tabby webhook carried no payment id"))
 
-		# ponytail: `authorized` stays Pending here because capture moves money and this runs as Guest; a
-		# shopper who never returns is charged only on the next status sync. Add a sweep if that bites.
+		# `authorized` stays Pending: capture moves money, so it waits for a status sync, not a Guest webhook.
 		return WebhookEvent(
 			session_id=session_id,
 			status=TABBY_STATUS_MAP.get(read_status(payment.get("status")), "Pending"),
@@ -194,8 +193,6 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		currency = currency or self.currency
 		client = self.get_client()
 		if read_status(client.get_payment(session_id).status) != TABBY_CAPTURED_STATUS:
-			# ponytail: an authorised payment needs Tabby's void endpoint, not wired up; add it if orders
-			# get cancelled between authorisation and capture.
 			frappe.throw(
 				_(
 					"Tabby has not captured this payment yet, so it cannot be refunded. An authorised but"
@@ -246,8 +243,6 @@ def get_customer_name(customer: dict) -> str:
 
 
 def get_shipping_address(customer: dict) -> dict:
-	# ponytail: no `zip`, the customer contract has no postcode; add it to
-	# `GatewayPaymentRequest.get_customer_details` if Tabby approvals depend on it.
 	address = customer.get("address") or {}
 	details = {"address": address.get("line1"), "city": address.get("city")}
 	return {key: value for key, value in details.items() if value}
@@ -274,8 +269,6 @@ def throw_rejection(configuration: TabbyConfiguration):
 
 def get_webhook_event_id(payment: dict) -> str:
 	"""Tabby sends no event id, so derive one for replay protection."""
-	# ponytail: two transitions with the same id, status and timestamp dedupe into one; switch to
-	# Tabby's own event id if they start sending one.
 	timestamp = payment.get("updated_at") or payment.get("created_at") or ""
 	fingerprint = f"{payment.get('id')}|{payment.get('status')}|{timestamp}"
 	return hashlib.sha256(fingerprint.encode()).hexdigest()
