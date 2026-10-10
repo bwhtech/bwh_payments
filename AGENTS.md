@@ -156,5 +156,8 @@ build a werkzeug `Request` into `frappe.local.request` and call `webhook.handle(
 - `use_json_request_body = True`: non-GET calls to this app's endpoints send JSON bodies.
 - Keep comments rare: only for a non-obvious reason (security, money, a gateway quirk). Do not add
   `# ponytail:` or similar marker comments.
+- Name variables and functions with simple technical terms that say what they do (`lock_row`,
+  `get_refund_summary`), not jargon or metaphor. Do not rename whitelisted methods, `api.py` functions or
+  stub controls without checking callers in other apps.
 - `get_available_payment_modes` uses a per-worker `site_cache` (1 h TTL), so other workers can briefly
   keep offering a just-disabled gateway.
