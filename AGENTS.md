@@ -88,7 +88,7 @@ frappe/payments convention, so apps written for it settle orders unchanged.
    `amount`, `currency_code`, optional customer fields).
 2. `before_save` calls `create_session` once (when `order_ref` is empty) and stores `order_ref` (gateway
    session id, unique), `order_url` (checkout URL for the shopper) and the return URLs.
-3. Status moves from `Pending` by one of two paths, both under a row lock (`lock_refund_ledger`):
+3. Status moves from `Pending` by one of two paths, both under a row lock (`lock_row`):
    - **Webhook**: `bwh_payments.bwh_payments.webhook.handle` (guest POST, `?gateway=<profile>`,
      rate-limited) → settings `handle_webhook` verifies and returns a `WebhookEvent` or `None`
      → request found by `order_ref` → `apply_webhook_status` as Administrator (dedupes on

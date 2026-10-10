@@ -136,10 +136,10 @@ def read_telr_auth_response(response) -> TelrRemoteResult:
 	if auth is None:
 		return TelrRemoteResult(message=_("Telr returned no authorisation block"))
 
-	def text_of(tag):
+	def get_text(tag):
 		node = auth.find(tag)
 		return node.text if node is not None else None
 
 	return TelrRemoteResult(
-		status=text_of("status"), message=text_of("message"), transaction_ref=text_of("tranref")
+		status=get_text("status"), message=get_text("message"), transaction_ref=get_text("tranref")
 	)

@@ -126,7 +126,7 @@ class GatewayPaymentRequest(Document):
 
 		# Locked after the slow gateway call, so a webhook committed meanwhile cannot cause a
 		# TimestampMismatchError.
-		self.lock_refund_ledger()
+		self.lock_row()
 
 		if flt(self.refund_amount) > 0:
 			status = self.resolve_refund_status()
@@ -146,7 +146,7 @@ class GatewayPaymentRequest(Document):
 			self.sync_status()
 			return False
 
-		self.lock_refund_ledger()
+		self.lock_row()
 		if self.status != "Pending":
 			return False
 
@@ -163,7 +163,7 @@ class GatewayPaymentRequest(Document):
 			return "Refunded"
 		return "Partially Refunded"
 
-	def lock_refund_ledger(self):
+	def lock_row(self):
 		"""Row lock plus reload, so concurrent refunds cannot both pass the over-refund guard."""
 		frappe.db.get_value(
 			"Gateway Payment Request",
@@ -175,7 +175,7 @@ class GatewayPaymentRequest(Document):
 
 	@frappe.whitelist()
 	def refund(self, amount: float | None = None, payment_entry: str | None = None):
-		self.lock_refund_ledger()
+		self.lock_row()
 
 		if self.status not in REFUNDABLE_STATUSES:
 			frappe.throw(
@@ -186,7 +186,7 @@ class GatewayPaymentRequest(Document):
 		if payment_entry:
 			payment_entry = get_original_payment_entry(payment_entry)
 		if payment_entry and payment_entry in self.get_refunded_payment_entries():
-			return self.get_refund_ledger()
+			return self.get_refund_summary()
 
 		precision = get_minor_unit_exponent(self.currency_code)
 		remaining = self.get_remaining_refundable_amount()
@@ -229,9 +229,9 @@ class GatewayPaymentRequest(Document):
 		self.save(ignore_permissions=True)
 
 		request_log.db_set("status", "Completed", update_modified=False)
-		return self.get_refund_ledger()
+		return self.get_refund_summary()
 
-	def get_refund_ledger(self) -> dict:
+	def get_refund_summary(self) -> dict:
 		return {"refund_amount": self.refund_amount, "status": self.status, "refund_id": self.refund_id}
 
 	def append_refund_id(self, refund_id: str | None):
@@ -250,7 +250,7 @@ class GatewayPaymentRequest(Document):
 		self.refund_payment_entries = ",".join(entries)
 
 	def apply_webhook_status(self, status: str, event_id: str | None = None) -> bool:
-		self.lock_refund_ledger()
+		self.lock_row()
 
 		if event_id and self.last_webhook_event_id == event_id:
 			return False
