@@ -8,9 +8,9 @@ and NAME-dark.svg, and embedded with <picture>. The wiki points the dark <source
 a prefers-color-scheme query inside the SVG would follow the OS instead.
 """
 
-import os
 import sys
 from html import escape
+from pathlib import Path
 
 LOOP = 6.5
 THEMES = {
@@ -418,18 +418,18 @@ if __name__ == "__main__":
 	# --still also writes OUT_DIR/still/<name>-<theme>.svg with animation off, on the page colour: the frame
 	# readers with reduced motion see, and the only frame Quick Look can render.
 	args = [a for a in sys.argv[1:] if a != "--still"]
-	out, names = args[0], args[1:] or list(FIGURES)
+	out, names = Path(args[0]), args[1:] or list(FIGURES)
 	page = {"light": "#ffffff", "dark": "#171717"}
 	for name in names:
 		markup = FIGURES[name]()
 		for theme, tokens in THEMES.items():
 			themed = markup.replace("/*tokens*/", tokens)
-			open(f"{out}/{name}-{theme}.svg", "w").write(themed)
-			print(f"{out}/{name}-{theme}.svg")
+			(out / f"{name}-{theme}.svg").write_text(themed)
+			print(out / f"{name}-{theme}.svg")
 			if "--still" in sys.argv:
-				os.makedirs(f"{out}/still", exist_ok=True)
+				(out / "still").mkdir(exist_ok=True)
 				still = themed.replace("</style>", ".a{animation:none!important}</style>")
 				still = still.replace(
 					"</title>", f'</title>\n<rect width="100%" height="100%" fill="{page[theme]}"/>', 1
 				)
-				open(f"{out}/still/{name}-{theme}.svg", "w").write(still)
+				(out / "still" / f"{name}-{theme}.svg").write_text(still)
