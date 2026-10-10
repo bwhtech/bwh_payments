@@ -7,6 +7,7 @@ from frappe.integrations.utils import create_request_log
 from frappe.model.document import Document
 from frappe.utils.data import cstr, flt
 
+from bwh_payments.base_class import CheckoutSession, RefundResult
 from bwh_payments.currency import get_minor_unit_exponent
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
@@ -76,6 +77,14 @@ class GatewayPaymentRequest(Document):
 		if not self.order_ref:
 			self.create_session()
 
+	def on_update(self):
+		# Every path to Paid (webhook, poll, sweep) saves through here, so the referenced document hears it
+		# exactly once. The frappe/payments convention, so an app written for that settles orders unchanged.
+		if self.has_value_changed("status") and self.status == "Paid":
+			frappe.get_doc(self.ref_doctype, self.ref_docname).run_method(
+				"on_payment_authorized", "Completed"
+			)
+
 	def get_gateway_settings(self):
 		gateway_settings = frappe.get_cached_value(
 			"Payment Gateway Profile", self.gateway, "gateway_settings"
@@ -83,17 +92,19 @@ class GatewayPaymentRequest(Document):
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
-		session = self.get_gateway_settings().create_session(
-			flt(self.amount),
-			self.currency_code,
-			reference=self.name,
-			customer=self.get_customer_details(),
+		session = CheckoutSession.model_validate(
+			self.get_gateway_settings().create_session(
+				flt(self.amount),
+				self.currency_code,
+				reference=self.name,
+				customer=self.get_customer_details(),
+			)
 		)
-		self.order_ref = session.get("session_id")
-		self.order_url = session.get("redirect_url")
-		self.success_url = session.get("success_url")
-		self.cancel_url = session.get("cancel_url")
-		self.failure_url = session.get("failure_url")
+		self.order_ref = session.session_id
+		self.order_url = session.redirect_url
+		self.success_url = session.success_url
+		self.cancel_url = session.cancel_url
+		self.failure_url = session.failure_url
 
 	def get_customer_details(self) -> dict:
 		address = None
@@ -229,7 +240,7 @@ class GatewayPaymentRequest(Document):
 			request_log.db_set("status", "Failed", update_modified=False)
 			raise
 
-		self.append_refund_id((result or {}).get("refund_id"))
+		self.append_refund_id(RefundResult.model_validate(result or {}).refund_id)
 		self.refund_amount = flt(flt(self.refund_amount, precision) + amount, precision)
 		self.status = self.resolve_refund_status()
 		if payment_entry:
