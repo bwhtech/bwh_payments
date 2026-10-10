@@ -31,6 +31,8 @@ bench --site bwhpayments.localhost migrate
 ```
 
 CI (`.github/workflows/linter.yml`) also runs Frappe's semgrep rules and `pip-audit`.
+PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport <branch>` (e.g.
+`backport develop`) to open the cherry-pick PR automatically.
 
 ## Architecture
 

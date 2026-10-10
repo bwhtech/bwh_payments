@@ -4,18 +4,31 @@ on:
   push:
     branches:
       - develop
+      - v1-stable
+    paths-ignore:
+      - "**.md"
+      - ".claude/**"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - ".claude/**"
+  merge_group:
 
 concurrency:
-  group: develop-bwh_payments-${{ github.event.number }}
+  group: ci-bwh_payments-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   tests:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
     name: Server
+    # pull-requests: write lets the job post the coverage comment.
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      PYTHONWARNINGS: ignore
 
     services:
       redis-cache:
@@ -29,10 +42,13 @@ jobs:
       mariadb:
         image: mariadb:11.8
         env:
-          MYSQL_ROOT_PASSWORD: root
+          MARIADB_ROOT_PASSWORD: root
         ports:
           - 3306:3306
-        options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=3
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=2s --health-retries=3
+          --tmpfs=/var/lib/mysql:rw,noexec,nosuid,size=2g
 
     steps:
       - name: Clone
@@ -48,58 +64,107 @@ jobs:
         with:
           python-version: '3.14'
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
         with:
-          node-version: 24
-          check-latest: true
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/requirements*.txt
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/*requirements.txt', '**/pyproject.toml', '**/setup.py', '**/setup.cfg') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-            ${{ runner.os }}-
-
-      - name: Get yarn cache directory path
-        id: yarn-cache-dir-path
-        run: 'echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT'
-
-      - uses: actions/cache@v4
-        id: yarn-cache
-        with:
-          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
-          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-
-
-      - name: Install MariaDB Client
+      - name: Install MariaDB client and bench
         run: |
-          sudo apt update
-          sudo apt-get install mariadb-client
+          install_db_client() {
+            # `apt-get update` is most of the cost, so only pay for it if the
+            # runner's package lists are too stale to resolve.
+            sudo apt-get -qq install -y --no-install-recommends mariadb-client \
+              || { sudo apt-get -qq update \
+                   && sudo apt-get -qq install -y --no-install-recommends mariadb-client; }
+          }
 
-      - name: Setup
+          # apt and uv share no inputs.
+          install_db_client &> "${RUNNER_TEMP}/apt.log" &
+          apt_pid=$!
+
+          uv tool install frappe-bench
+
+          if ! wait "$apt_pid"; then
+            cat "${RUNNER_TEMP}/apt.log"
+            exit 1
+          fi
+
+      - name: Init bench
         run: |
-          pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
+          bench init ~/frappe-bench \
+            --skip-redis-config-generation \
+            --skip-assets \
+            --no-backups \
+            --python "$(which python)"
 
       - name: Install
         working-directory: /home/runner/frappe-bench
         run: |
-          bench get-app bwh_payments $GITHUB_WORKSPACE
+          bench get-app --skip-assets bwh_payments "$GITHUB_WORKSPACE"
           bench setup requirements --dev
+
+          # The CI database is discarded at the end of the job, so crash safety buys
+          # nothing. `root` must match MARIADB_ROOT_PASSWORD on the service.
+          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "
+            SET GLOBAL innodb_flush_log_at_trx_commit = 0;
+            SET GLOBAL sync_binlog = 0;"
+
           bench new-site --db-root-password root --admin-password admin test_site
           bench --site test_site install-app bwh_payments
-          bench build
-        env:
-          CI: 'Yes'
+          bench --site test_site set-config allow_tests true
 
       - name: Run Tests
         working-directory: /home/runner/frappe-bench
-        run: |
-          bench --site test_site set-config allow_tests true
-          bench --site test_site run-tests --app bwh_payments
+        run: bench --site test_site run-tests --app bwh_payments --coverage
         env:
           TYPE: server
+
+      # Frappe's --coverage omits test folders but not test_*.py files, so the report
+      # is rebuilt from the raw data with the test modules left out.
+      - name: Build coverage report
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        # Reported from the app folder so the table shows paths relative to it.
+        working-directory: /home/runner/frappe-bench/apps/bwh_payments
+        run: |
+          ../../env/bin/coverage combine --data-file=../../sites/.coverage ../../sites
+          ../../env/bin/coverage report --data-file=../../sites/.coverage --format=markdown \
+            --skip-empty --omit='*/test_*.py,*/tests/*' > ../../sites/coverage.md
+
+      - name: Comment coverage on the pull request
+        # A fork's token cannot comment, so only same-repo pull requests get one.
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        continue-on-error: true
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const REPORT = '/home/runner/frappe-bench/sites/coverage.md';
+            const MARKER = '<!-- backend-coverage -->';
+            const MAX_COMMENT_LENGTH = 65000;
+
+            if (!fs.existsSync(REPORT)) return core.info('No coverage report was built.');
+
+            const table = fs.readFileSync(REPORT, 'utf8').trim();
+            // --skip-empty appends a note after the table, so the last line is not the total.
+            const totalRow = table.split('\n').find((line) => line.includes('TOTAL')) || '';
+            const total = (totalRow.match(/([\d.]+%)/g) || ['unknown']).pop();
+
+            const summary = `${MARKER}\n### Backend test coverage: **${total}**\n\nCommit ${context.payload.pull_request.head.sha.slice(0, 7)}. Test modules are excluded.`;
+            const details = `\n\n<details><summary>Coverage by file</summary>\n\n${table}\n\n</details>`;
+            const body = summary.length + details.length < MAX_COMMENT_LENGTH ? summary + details : summary;
+
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments,
+              { ...context.repo, issue_number });
+            const existing = comments.find((comment) => (comment.body || '').includes(MARKER));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number, body });
+            }
