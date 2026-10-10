@@ -2,8 +2,6 @@ from abc import ABC, abstractmethod
 
 from bwh_payments.services import GatewayModel
 
-# Models mirror Telr's JSON, keeping only the fields this app reads.
-
 
 class TelrStatus(GatewayModel):
 	text: str | None = None
@@ -32,8 +30,7 @@ class BaseTelrClient(ABC):
 	"""Telr's Hosted Payment Page and remote API. A rejected JSON call raises `frappe.ValidationError`."""
 
 	@abstractmethod
-	def create_order(self, order: dict, return_urls: dict, customer: dict) -> TelrOrder:
-		"""`order.json` method `create`, with Telr's own `order`, `return` and `customer` blocks."""
+	def create_order(self, order: dict, return_urls: dict, customer: dict) -> TelrOrder: ...
 
 	@abstractmethod
 	def check_order(self, order_ref: str) -> TelrOrder: ...

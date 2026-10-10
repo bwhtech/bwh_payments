@@ -4,8 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class GatewayResult(BaseModel):
-	# A gateway from another app may hand back numeric ids. Rejecting one after a refund has moved money
-	# would leave it unrecorded and refundable again.
+	# Rejecting a numeric refund id after money moved would leave the refund unrecorded.
 	model_config = ConfigDict(coerce_numbers_to_str=True)
 
 
@@ -18,31 +17,20 @@ class CheckoutSession(GatewayResult):
 
 
 class RefundResult(GatewayResult):
-	# Read after the money has moved, so nothing here may be required: a thin result must not strand it.
+	# All optional: read after money moved, so a thin result must not fail.
 	refund_id: str | None = None
 	status: str | None = None
-	# Major units, round-tripped from the gateway's own echo where it gives one.
 	amount: float | None = None
 
 
 class WebhookEvent(GatewayResult):
 	session_id: str
-	# A Gateway Payment Request `status` value.
 	status: str
 	event_id: str | None = None
 
 
 class PaymentGatewayBase(ABC):
-	"""Contract every `<Gateway> Gateway Settings` Single must satisfy to back a Payment Gateway Profile.
-
-	All amounts crossing this boundary are in MAJOR units (12.34, not 1234). What each gateway does with
-	them is its own business: Stripe converts to ISO minor units with `bwh_payments.currency.to_minor_units`,
-	while Telr bills in major units and only uses the currency's minor-unit exponent to decide how many
-	decimals to send. Either way charge and refund go through the same conversion, so they always agree.
-
-	Callers read every result through `<Model>.model_validate`, so a gateway from another app that still
-	returns plain dicts keeps working, and one that returns garbage fails loudly at the boundary.
-	"""
+	"""Contract for every `<Gateway> Gateway Settings` Single. Amounts are in major units (12.34)."""
 
 	@abstractmethod
 	def create_session(
@@ -55,14 +43,14 @@ class PaymentGatewayBase(ABC):
 
 	@abstractmethod
 	def get_payment_status(self, session_id: str) -> str:
-		"""Return one of the Gateway Payment Request `status` values, read from the gateway."""
+		"""Return a Gateway Payment Request `status` value."""
 
 	@abstractmethod
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult: ...
 
 	@abstractmethod
 	def handle_webhook(self, payload: bytes, headers: dict) -> WebhookEvent | None:
-		"""Verify the signature, then return None to ignore the delivery or the event it carries."""
+		"""Verify the signature, then return the event, or None to ignore the delivery."""
 
 	def cancel_session(self, session_id: str) -> bool:
 		return False

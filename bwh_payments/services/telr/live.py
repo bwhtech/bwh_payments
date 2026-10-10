@@ -109,7 +109,7 @@ class LiveTelrClient(BaseTelrClient):
 
 
 def log_request(endpoint: str, output=None, error=None):
-	# The request payload carries the store auth key, so only the endpoint and the outcome are logged.
+	# The payload carries the store auth key, so only the endpoint is logged.
 	create_request_log(
 		{"endpoint": endpoint},
 		service_name="Telr",
@@ -123,13 +123,11 @@ def log_request(endpoint: str, output=None, error=None):
 
 
 def summarise_telr_order(response) -> dict:
-	"""Telr's order payloads echo the shopper's name, email and address, so only the ids are logged."""
 	order = (response or {}).get("order") or {}
 	return {"order_ref": order.get("ref"), "status": (order.get("status") or {}).get("text")}
 
 
 def read_telr_auth_response(response) -> TelrRemoteResult:
-	"""Pull status, message and transaction ref out of Telr's remote.xml reply, shape-tolerantly."""
 	# ponytail: stdlib ElementTree is not hardened against XML entity attacks; the response comes from a
 	# pinned Telr host over TLS. Move to defusedxml if Telr is ever fronted by a customer-controlled host.
 	body = response if isinstance(response, str) else getattr(response, "text", "") or ""

@@ -14,13 +14,8 @@ from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_g
 )
 from bwh_payments.services.razorpay.stub import build_payment_link_event, sign_payload
 
-# No IGNORE_TEST_RECORD_DEPENDENCIES here: frappe only honours it inside a doctype folder and raises
-# NotImplementedError otherwise. Outside one it loads no test records at all, which is what we want.
-
 
 class TestRazorpayWebhookSpine(RazorpayTestCase):
-	"""The whole delivery path: `webhook.handle()` -> gateway verifier -> Gateway Payment Request."""
-
 	def setUp(self):
 		super().setUp()
 		self.original_request = getattr(frappe.local, "request", None)
@@ -114,7 +109,6 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 			fields=["data"],
 		)
 		self.assertTrue(logged)
-		# The log records the gateway, the link id and the event id — never the delivered body.
 		for row in logged:
 			self.assertNotIn("payment_link", row.data)
 			self.assertNotIn("entity", row.data)

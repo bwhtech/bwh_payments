@@ -18,11 +18,9 @@ class TestTelrGatewaySettings(IntegrationTestCase):
 		return settings.get_payment_status(StubTelrClient.add_order(status_text))
 
 	def test_an_authorised_order_stays_pending_until_the_store_says_otherwise(self):
-		"""An authorise-only store settles later; calling this Paid ships goods against uncaptured funds."""
 		self.assertEqual(self.get_payment_status("Authorised", 0), "Pending")
 
 	def test_an_authorised_order_counts_as_paid_once_the_store_is_marked_auth_and_capture(self):
-		"""Telr `ecom` authorises and captures together, so these orders otherwise sit unfulfilled forever."""
 		self.assertEqual(self.get_payment_status("Authorised", 1), "Paid")
 
 	def test_the_american_spelling_is_mapped_the_same_way(self):
@@ -32,10 +30,7 @@ class TestTelrGatewaySettings(IntegrationTestCase):
 	def test_the_switch_never_promotes_a_status_telr_did_not_authorise(self):
 		self.assertEqual(self.get_payment_status("Declined", 1), "Not Paid")
 		self.assertEqual(self.get_payment_status("Cancelled", 1), "Cancelled")
-		# Anything unmapped stays Pending: never terminal, and never Paid.
 		self.assertEqual(self.get_payment_status("Who Knows", 1), "Pending")
-
-	# --- session ----------------------------------------------------------
 
 	def test_create_session_bills_major_units_and_brings_the_shopper_back_with_our_reference(self):
 		settings = frappe.get_single("Telr Gateway Settings")
@@ -48,8 +43,6 @@ class TestTelrGatewaySettings(IntegrationTestCase):
 		self.assertIn(session.session_id, StubTelrClient.orders)
 		self.assertIn("ref=abc", session.success_url)
 		self.assertIn("reference_id=GPR-0001", session.success_url)
-
-	# --- refund -----------------------------------------------------------
 
 	def get_settings_with_remote_key(self):
 		settings = frappe.get_single("Telr Gateway Settings")

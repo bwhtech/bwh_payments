@@ -13,8 +13,7 @@ from bwh_payments.services.telr.base import (
 
 
 class StubTelrClient(BaseTelrClient):
-	"""In-memory Telr, selected under tests. Drive outcomes through the classmethod controls; reset()
-	between tests. Recordings keep Telr's own request shapes."""
+	"""In-memory Telr for tests. Call reset() in setUp."""
 
 	orders: ClassVar[dict[str, TelrOrder]] = {}
 	created_orders: ClassVar[list[dict]] = []
@@ -28,11 +27,8 @@ class StubTelrClient(BaseTelrClient):
 		cls.refunds = []
 		cls.next_refund_status = "A"
 
-	# --- controls -----------------------------------------------------------------------------------
-
 	@classmethod
 	def add_order(cls, status_text: str = "Pending") -> str:
-		"""An order that exists at Telr without this app having created it."""
 		# Unique per call: the doctype enforces a unique order_ref and rows outlive a single test.
 		order_ref = f"telr_{frappe.generate_hash(length=12)}"
 		cls.orders[order_ref] = TelrOrder(
@@ -48,13 +44,11 @@ class StubTelrClient(BaseTelrClient):
 
 	@classmethod
 	def pay(cls, order_ref: str) -> str:
-		"""The shopper completes the Hosted Payment Page: Telr settles a transaction against the order."""
+		"""Settle a transaction against the order."""
 		cls.set_status(order_ref, "Paid")
 		transaction_ref = f"tran_{frappe.generate_hash(length=12)}"
 		cls.orders[order_ref].transaction = TelrTransaction(ref=transaction_ref)
 		return transaction_ref
-
-	# --- API ----------------------------------------------------------------------------------------
 
 	def create_order(self, order: dict, return_urls: dict, customer: dict) -> TelrOrder:
 		self.created_orders.append({"order": order, "return": return_urls, "customer": customer})

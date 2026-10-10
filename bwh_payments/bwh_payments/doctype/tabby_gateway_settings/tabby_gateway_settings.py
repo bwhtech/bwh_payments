@@ -17,13 +17,10 @@ from bwh_payments.services.tabby.base import BaseTabbyClient, TabbyCheckout, Tab
 from bwh_payments.services.tabby.live import LiveTabbyClient
 from bwh_payments.services.tabby.stub import StubTabbyClient
 
-# Tabby only underwrites in these markets, and a merchant code is tied to one of them. Sending anything
-# else is a 400 the shopper sees as a broken checkout, so it is refused before the call is made.
+# Tabby only underwrites in these markets; anything else is a 400 at checkout.
 TABBY_SUPPORTED_CURRENCIES = ("SAR", "AED", "KWD", "BHD", "QAR")
 
-# Tabby reports status in lowercase. Anything unrecognised stays Pending: never terminal, and never Paid,
-# so an unmapped Tabby state can neither release goods nor cancel a live order. `authorized` is
-# deliberately absent — credit is approved but no money has moved, and that is resolved by capturing.
+# Unmapped states stay Pending. `authorized` is absent on purpose: no money has moved until capture.
 TABBY_STATUS_MAP = {
 	"closed": "Paid",
 	"rejected": "Not Paid",
@@ -35,12 +32,9 @@ TABBY_AUTHORISED_STATUS = "authorized"
 TABBY_CAPTURED_STATUS = "closed"
 TABBY_REJECTED_STATUS = "rejected"
 
-# `dict(frappe.request.headers)` loses werkzeug's case-insensitivity, so this has to match the canonical
-# title-case werkzeug hands over.
+# Title case: `dict(frappe.request.headers)` drops werkzeug's case-insensitivity.
 TABBY_SIGNATURE_HEADER = "X-Webhook-Signature"
 
-# A BNPL refusal is routine, not an error: the shopper simply did not qualify for this order. Each reason
-# gets a message they can act on, because "payment failed" sends them away instead of to another method.
 TABBY_REJECTION_MESSAGES = {
 	"not_available": "Tabby cannot approve this order right now. Please choose another payment method.",
 	"order_amount_too_high": "This order is above Tabby's limit. Please choose another payment method.",
@@ -98,8 +92,7 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 			"payment": {
 				"amount": format_tabby_amount(amount, currency),
 				"currency": currency.upper(),
-				# Tabby rejects a key it cannot read, so a guest who left a field empty would otherwise
-				# make checkout impossible.
+				# Empty values are dropped: Tabby rejects keys it cannot read.
 				"buyer": get_buyer_details(customer or {}),
 				"shipping_address": get_shipping_address(customer or {}),
 				"order": {"reference_id": reference},
@@ -112,10 +105,7 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		checkout = self.get_client().create_checkout(payload)
 		redirect_url = get_installments_url(checkout)
 
-		# The *payment* id, not the top-level checkout id: `GET /payments/{id}`, the capture and refund
-		# endpoints and the webhook body all key on the payment, and `webhook.handle` matches this value
-		# against `order_ref` byte-for-byte. The checkout id is the obvious wrong choice and is unusable
-		# everywhere else.
+		# The payment id, not the checkout id: status, capture, refund and webhooks all key on it.
 		session_id = checkout.payment.id if checkout.payment else None
 		if not session_id:
 			frappe.throw(_("Tabby returned a checkout without a payment id"))
@@ -129,10 +119,9 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		)
 
 	def build_return_url(self, url: str, label: str, reference: str | None) -> str:
-		"""Tabby only appends `?payment_id=...` on return, so the shopper carries our request name back."""
+		"""Tabby only appends `?payment_id=...` on return, so add our request name."""
 		if not url:
 			frappe.throw(_("Please set the {0} in Tabby Gateway Settings").format(label))
-		# String-concatenating "?reference_id=..." breaks any URL that already carries a query.
 		parts = urlsplit(get_localised_url(url))
 		query = parse_qsl(parts.query)
 		query.append(("reference_id", reference or ""))
@@ -152,15 +141,8 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 	def capture_payment(
 		self, client: BaseTabbyClient, session_id: str, payment: TabbyPayment
 	) -> TabbyPayment:
-		"""Take the money Tabby has only authorised, and return the payment as it stands afterwards.
-
-		This is where the shopper is actually charged: an authorised Tabby payment is approved credit and
-		nothing more, so without this call the order is "approved" forever and no money ever arrives.
-		With it, Paid means money taken. A failed capture raises, so the request stays Pending rather
-		than reporting a charge that never happened.
-		"""
-		# The authorisation's own amount, never an argument: a capture can then never exceed what Tabby
-		# approved, whatever the caller believes the order is worth.
+		"""This is where the shopper is charged. A failed capture raises, so the request stays Pending."""
+		# The authorised amount, never a caller's figure, so a capture cannot exceed what Tabby approved.
 		currency = payment.currency or self.currency
 		client.capture_payment(session_id, format_tabby_amount(payment.amount, currency))
 		return client.get_payment(session_id)
@@ -172,20 +154,15 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		if not webhook_secret:
 			frappe.throw(_("Webhook secret is not configured in Tabby Gateway Settings"))
 
-		# Tabby does not sign its webhooks. This header is a static token we chose at registration and
-		# that Tabby echoes back verbatim; it says nothing about the body. Comparing with `!=` would leak
-		# a timing oracle on the one secret standing between a stranger and a Paid order.
+		# Tabby does not sign webhooks; this header is a static token. Compare in constant time.
 		signature = headers.get(TABBY_SIGNATURE_HEADER)
 		if not signature:
 			frappe.throw(_("Missing {0} header").format(TABBY_SIGNATURE_HEADER))
-		# compare_digest raises TypeError on a non-ASCII str, which would surface as an unexplained
-		# TypeError instead of the mismatch this actually is.
+		# compare_digest raises TypeError on a non-ASCII str.
 		if not signature.isascii() or not hmac.compare_digest(webhook_secret, signature):
 			frappe.throw(_("Tabby webhook token does not match"))
 
-		# parse_json passes bytes straight through untouched, so the body is decoded first.
-		# UnicodeDecodeError is a ValueError, and so is the JSONDecodeError parse_json raises on a body it
-		# cannot read. Either way the delivery is not a payment we can act on.
+		# parse_json passes bytes through untouched. Decode and JSON errors are both ValueError.
 		try:
 			payment = frappe.parse_json(payload.decode())
 		except ValueError:
@@ -197,9 +174,8 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		if not session_id:
 			frappe.throw(_("Tabby webhook carried no payment id"))
 
-		# ponytail: an `authorized` delivery is left Pending because capturing moves money and this path
-		# runs as Guest, so a shopper who authorises and never returns to the site is not charged until a
-		# status sync runs; add a scheduled sweep over Pending requests if abandoned returns show up.
+		# ponytail: `authorized` stays Pending here because capture moves money and this runs as Guest; a
+		# shopper who never returns is charged only on the next status sync. Add a sweep if that bites.
 		return WebhookEvent(
 			session_id=session_id,
 			status=TABBY_STATUS_MAP.get(read_status(payment.get("status")), "Pending"),
@@ -207,7 +183,7 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		)
 
 	def validate_webhook_source_ip(self):
-		"""Defence in depth: the shared token is the only real check, so narrow who may even present it."""
+		"""Defence in depth on top of the shared token."""
 		allowed_ips = [line.strip() for line in (self.webhook_ips or "").splitlines() if line.strip()]
 		if not allowed_ips:
 			return
@@ -218,9 +194,8 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		currency = currency or self.currency
 		client = self.get_client()
 		if read_status(client.get_payment(session_id).status) != TABBY_CAPTURED_STATUS:
-			# ponytail: only a captured payment is refundable — an authorised one has to be voided, and
-			# Tabby's void endpoint is not wired up here; add it if orders start being cancelled between
-			# authorisation and capture.
+			# ponytail: an authorised payment needs Tabby's void endpoint, not wired up; add it if orders
+			# get cancelled between authorisation and capture.
 			frappe.throw(
 				_(
 					"Tabby has not captured this payment yet, so it cannot be refunded. An authorised but"
@@ -228,13 +203,12 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 				)
 			)
 
-		# Tabby answers a refund with the updated payment, not with a refund object, so the refund it just
-		# created is the last entry on the payment's ledger.
+		# Tabby returns the updated payment; the new refund is its last entry.
 		refunds = client.refund_payment(session_id, format_tabby_amount(amount, currency)).refunds or []
 		if not refunds:
 			frappe.throw(_("Tabby accepted the refund but returned no refund record"))
 
-		# Tabby reports no per-refund status; a refund it accepted and echoed back has succeeded.
+		# Tabby has no per-refund status; an accepted refund has succeeded.
 		return RefundResult(refund_id=refunds[-1].id, status="succeeded", amount=flt(amount))
 
 
@@ -248,17 +222,12 @@ def validate_tabby_currency(currency: str):
 
 
 def format_tabby_amount(amount, currency: str) -> str:
-	"""Tabby bills in major units as a decimal string, at the currency's own precision.
-
-	KWD and BHD carry three decimals, so a plain `str(float)` under-specifies them and Tabby reads a
-	different figure than the one the shopper agreed to.
-	"""
+	"""Major units as a decimal string at the currency's exponent (KWD and BHD carry three)."""
 	exponent = get_minor_unit_exponent(currency)
 	return f"{flt(amount, exponent):.{exponent}f}"
 
 
 def read_status(status: str | None) -> str:
-	"""Tabby's status is lowercase, but normalising once keeps a stray " Closed " from slipping past."""
 	return (status or "").strip().casefold()
 
 
@@ -277,19 +246,15 @@ def get_customer_name(customer: dict) -> str:
 
 
 def get_shipping_address(customer: dict) -> dict:
-	# ponytail: Tabby also reads a `zip`, but the shared customer contract carries country rather than a
-	# postcode, so it goes unsent; add it to `GatewayPaymentRequest.get_customer_details` if Tabby's
-	# approval rate ever turns out to depend on it.
+	# ponytail: no `zip`, the customer contract has no postcode; add it to
+	# `GatewayPaymentRequest.get_customer_details` if Tabby approvals depend on it.
 	address = customer.get("address") or {}
 	details = {"address": address.get("line1"), "city": address.get("city")}
 	return {key: value for key, value in details.items() if value}
 
 
 def get_installments_url(checkout: TabbyCheckout) -> str:
-	"""Return the hosted checkout URL, or explain the refusal in words a shopper can act on."""
 	configuration = checkout.configuration or TabbyConfiguration()
-	# `available_products` holds a *list* of installment plans, while `products` holds an object carrying
-	# the rejection reason. Indexing the list unguarded shows a declined shopper a raw traceback.
 	available_products = configuration.available_products
 	installments = (available_products.installments if available_products else None) or []
 	if read_status(checkout.status) == TABBY_REJECTED_STATUS or not installments:
@@ -308,13 +273,9 @@ def throw_rejection(configuration: TabbyConfiguration):
 
 
 def get_webhook_event_id(payment: dict) -> str:
-	"""Tabby sends no event id, so replay protection needs a stable one derived from the delivery itself.
-
-	Identical redeliveries of the same payment state then collapse to one applied event.
-	"""
-	# ponytail: a digest over the body is weaker than a gateway-issued id — two genuinely separate
-	# transitions that carry the same id, status and timestamp would dedupe into one; switch to Tabby's
-	# own event id the day they start sending one.
+	"""Tabby sends no event id, so derive one for replay protection."""
+	# ponytail: two transitions with the same id, status and timestamp dedupe into one; switch to
+	# Tabby's own event id if they start sending one.
 	timestamp = payment.get("updated_at") or payment.get("created_at") or ""
 	fingerprint = f"{payment.get('id')}|{payment.get('status')}|{timestamp}"
 	return hashlib.sha256(fingerprint.encode()).hexdigest()

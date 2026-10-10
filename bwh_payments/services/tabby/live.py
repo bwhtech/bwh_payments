@@ -54,7 +54,6 @@ class LiveTabbyClient(BaseTabbyClient):
 
 
 def throw_request_error(url: str, exception: Exception) -> NoReturn:
-	"""Tabby explains a non-2xx in a JSON error body, so the status code alone never names it."""
 	description = read_tabby_error(exception)
 	log_request(url, error=description or exception)
 	frappe.throw(_("Tabby rejected the request: {0}").format(description or _("unknown error")))
@@ -74,8 +73,7 @@ def read_response(url: str, response) -> dict:
 
 
 def log_request(url: str, output=None, error=None):
-	# The headers carry the Bearer secret and the payload carries the shopper's name, phone and address,
-	# so only the endpoint and the outcome are logged.
+	# Headers carry the secret and the payload shopper details, so only the endpoint is logged.
 	create_request_log(
 		{"endpoint": url},
 		service_name="Tabby",
@@ -89,7 +87,6 @@ def log_request(url: str, output=None, error=None):
 
 
 def summarise_tabby_payment(response: dict) -> dict:
-	"""Tabby echoes the shopper's name, phone and address, so only the ids are logged."""
 	# A checkout nests the payment; every other endpoint answers with the payment itself.
 	payment = response.get("payment") or response
 	return {"id": payment.get("id"), "status": response.get("status")}

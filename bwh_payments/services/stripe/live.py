@@ -5,8 +5,7 @@ from bwh_payments.services.stripe.base import BaseStripeClient, StripeCheckoutSe
 
 class LiveStripeClient(BaseStripeClient):
 	def __init__(self, api_key: str):
-		# A client per instance keeps two configured accounts from clobbering each other through the module
-		# level `stripe.api_key` that the SDK otherwise reads.
+		# Per instance, never the module-level `stripe.api_key`, so two accounts cannot clobber each other.
 		self.client = stripe.StripeClient(api_key)
 
 	def create_checkout_session(self, params: dict) -> StripeCheckoutSession:

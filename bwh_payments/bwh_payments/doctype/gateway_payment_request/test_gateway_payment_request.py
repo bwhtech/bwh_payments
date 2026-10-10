@@ -16,8 +16,6 @@ from bwh_payments.services.stripe.stub import StubStripeClient
 GATEWAY = "Stripe Test Gateway"
 WEBHOOK_SECRET = "whsec_test_secret"
 
-# None of these links are exercised here, and generating their fixtures drags in ERPNext's whole test
-# bootstrap for no benefit.
 IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Address",
 	"Company",
@@ -53,15 +51,7 @@ def configure_stripe_gateway():
 
 
 def remove_stripe_gateway():
-	"""Undo configure_stripe_gateway.
-
-	Callers reach for this from setUpClass, which runs outside the per-test rollback. Without it a test
-	run leaves the dev site with an enabled gateway backed by a fake `sk_test_x` key, which the storefront
-	then offers shoppers at checkout.
-
-	The requests have to go too: `frappe.integrations.utils.create_request_log` commits, so every refund
-	test escapes the rollback and pins its Gateway Payment Request to the site for good.
-	"""
+	"""`create_request_log` commits, so refund tests escape the rollback and need this cleanup."""
 	for request_name in frappe.get_all("Gateway Payment Request", filters={"gateway": GATEWAY}, pluck="name"):
 		frappe.delete_doc(
 			"Gateway Payment Request", request_name, ignore_permissions=True, delete_permanently=True
@@ -70,7 +60,7 @@ def remove_stripe_gateway():
 	frappe.delete_doc(
 		"Payment Gateway Profile", GATEWAY, ignore_missing=True, ignore_permissions=True, force=True
 	)
-	# set_single_value, not save(): the keys are mandatory, so blanking them cannot go through validation.
+	# Not save(): the keys are mandatory.
 	frappe.db.set_single_value(
 		"Stripe Gateway Settings",
 		{"enabled": 0, "public_key": "", "private_key": "", "webhook_secret": ""},
@@ -99,14 +89,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		super().tearDownClass()
-		# Roll back the suite's own writes first so the commit below persists nothing but the cleanup, and
-		# commit it because the class-level rollback frappe queues after this would otherwise undo it.
+		# Commit only the cleanup; frappe's class-level rollback would undo it otherwise.
 		frappe.db.rollback()
 		remove_stripe_gateway()
 		frappe.db.commit()
 
 	def use_currency_number_format(self):
-		"""Let Currency fields take their precision from the currency, not the site number format."""
 		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 1)
 		frappe.clear_cache()
 
@@ -115,10 +103,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		payment_request.db_set("status", "Paid", update_modified=False)
 		payment_request.reload()
 
-	# --- session creation -------------------------------------------------
-
 	def test_create_session_charges_iso_minor_units_for_a_three_decimal_currency(self):
-		"""KWD has three decimals. The ported int(amount * 100) billed 1234 fils for 12.345 KWD."""
 		self.use_currency_number_format()
 		payment_request = make_payment_request(12.345, "KWD")
 
@@ -128,7 +113,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertTrue(payment_request.order_ref)
 
 	def test_a_three_decimal_amount_is_refused_when_the_site_stores_only_two(self):
-		"""Better to refuse the charge than to store 12.35 KWD and bill the shopper a different figure."""
 		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 0)
 		frappe.clear_cache()
 
@@ -155,8 +139,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertIn("session_id={CHECKOUT_SESSION_ID}", success_url)
 		self.assertEqual(success_url.count("?"), 1)
 
-	# --- refund ledger ----------------------------------------------------
-
 	def test_charge_and_refund_agree_on_the_minor_unit_conversion(self):
 		self.use_currency_number_format()
 		payment_request = make_payment_request(12.345, "KWD")
@@ -170,7 +152,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(payment_request.status, "Refunded")
 
 	def test_refund_guard_reads_the_locked_ledger_not_the_in_memory_copy(self):
-		"""A stale in-memory refund_amount is exactly how two concurrent refunds both pass the guard."""
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 
@@ -221,7 +202,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(payment_request.status, "Refunded")
 
 	def test_a_sub_minor_unit_amount_is_rejected_rather_than_refunding_everything(self):
-		"""`flt(amount, 2) or remaining` made flt(0.004, 2) == 0.0 falsy, so 0.004 refunded the lot."""
 		payment_request = make_payment_request(500, "SAR")
 		self.mark_paid(payment_request)
 
@@ -244,7 +224,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 
 	def test_a_residue_under_a_whole_unit_stays_refundable(self):
-		"""Relabelling this Refunded drops it out of REFUNDABLE_STATUSES and strands the 0.99 forever."""
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 
@@ -286,7 +265,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertIsNone(payment_request.refund_id)
 
 	def test_a_gateway_that_returns_no_refund_details_still_books_the_refund(self):
-		"""The result is read after the money has moved; a thin one must not strand the ledger."""
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 
@@ -318,8 +296,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)
 		self.assertEqual(payment_request.status, "Partially Refunded")
 
-	# --- polled status ----------------------------------------------------
-
 	def test_an_abandoned_session_is_released_and_expired_at_the_gateway(self):
 		payment_request = make_payment_request(100, "SAR")
 
@@ -350,7 +326,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertFalse(PaymentGatewayBase.cancel_session(object(), payment_request.order_ref))
 
 	def test_sync_status_does_not_reopen_a_payment_a_webhook_already_settled(self):
-		"""The shopper's poll and the webhook race; the poll must lose, not overwrite."""
 		payment_request = make_payment_request(100, "SAR")
 
 		# Stand in for a webhook that committed while the gateway round-trip was in flight.
@@ -374,8 +349,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertEqual(payment_request.status, "Partially Refunded")
 
-	# --- webhook status ---------------------------------------------------
-
 	def test_a_replayed_webhook_event_is_ignored(self):
 		payment_request = make_payment_request(100, "SAR")
 
@@ -396,8 +369,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertFalse(payment_request.apply_webhook_status("Refunded", "evt_1"))
 		self.assertEqual(payment_request.status, "Pending")
 
-	# --- reference document callback ---------------------------------------
-
 	def test_the_referenced_document_hears_about_a_payment_once(self):
 		payment_request = make_payment_request(100, "SAR")
 
@@ -415,8 +386,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		on_payment_authorized.assert_not_called()
 
-	# --- public api -------------------------------------------------------
-
 	def test_create_payment_opens_a_checkout_for_the_document(self):
 		payment_request = create_payment(
 			"Currency", "SAR", 100, "SAR", GATEWAY, customer_email="shopper@example.com"
@@ -431,8 +400,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 			create_payment("Currency", "SAR", 100, "SAR", GATEWAY, status="Paid")
 
 		self.assertEqual(StubStripeClient.created_sessions, [])
-
-	# --- schema invariants ------------------------------------------------
 
 	def test_order_ref_is_unique(self):
 		first = make_payment_request(100, "SAR")
@@ -451,5 +418,4 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 			).insert(ignore_permissions=True)
 
 	def test_gateway_payment_request_is_not_submittable(self):
-		# A submittable refund ledger can be amended into a second copy and double-count refunds.
 		self.assertFalse(frappe.get_meta("Gateway Payment Request").is_submittable)

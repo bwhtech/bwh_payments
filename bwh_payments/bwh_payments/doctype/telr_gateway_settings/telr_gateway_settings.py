@@ -15,8 +15,7 @@ from bwh_payments.services.telr.base import BaseTelrClient
 from bwh_payments.services.telr.live import LiveTelrClient
 from bwh_payments.services.telr.stub import StubTelrClient
 
-# Telr reports the outcome as free text. Anything unrecognised stays Pending: never terminal, and never
-# Paid, so an unmapped Telr state can neither release goods nor cancel a live order.
+# Telr reports free text. Unmapped states stay Pending.
 TELR_STATUS_MAP = {
 	"paid": "Paid",
 	"pending": "Pending",
@@ -26,10 +25,7 @@ TELR_STATUS_MAP = {
 	"expired": "Expired",
 }
 
-# Whether an authorisation is money in the bank depends on how the Telr store is set up, and Telr does not
-# report which. `ecom` authorises and captures together, so leaving these Pending strands paid orders
-# forever; an authorise-only store settles later, so calling them Paid ships goods against uncaptured
-# funds. Hence the per-store switch, defaulting to the safe side.
+# Telr does not say whether the store captures on authorisation, hence `treat_authorised_as_paid`.
 TELR_AUTHORISED_STATUSES = ("authorised", "authorized")
 TELR_ACCEPTED_STATUS = "A"
 
@@ -103,7 +99,7 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		)
 
 	def build_return_url(self, url: str, reference: str | None) -> str:
-		"""Telr cannot echo its own order ref back, so the shopper returns with our request name."""
+		"""Telr does not echo its order ref, so add our request name."""
 		if not url:
 			frappe.throw(_("Please set the Authorised URL in Telr Gateway Settings"))
 		parts = urlsplit(get_localised_url(url))
@@ -125,9 +121,7 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		return transaction.ref
 
 	def handle_webhook(self, payload: bytes, headers: dict) -> None:
-		# Telr has no signed webhook — status is only ever taken from the authenticated `check` API in
-		# get_payment_status. Ignoring the delivery is what keeps an unverified caller from marking a
-		# request Paid.
+		# Telr webhooks are unsigned; status comes only from get_payment_status.
 		return None
 
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
@@ -150,5 +144,4 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 
 
 def format_telr_amount(amount: float, currency: str) -> str:
-	"""Telr bills in major units, rounded to the currency's own minor unit."""
 	return str(flt(amount, get_minor_unit_exponent(currency)))

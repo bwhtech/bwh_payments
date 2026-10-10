@@ -2,8 +2,6 @@ from abc import ABC, abstractmethod
 
 from bwh_payments.services import GatewayModel
 
-# Models mirror Stripe's objects, keeping only the fields this app reads.
-
 
 class StripeCheckoutSession(GatewayModel):
 	id: str
@@ -17,8 +15,6 @@ class StripeCheckoutSession(GatewayModel):
 
 
 class StripeRefund(GatewayModel):
-	# Parsed after the money has moved, so nothing here may be required: a thin echo must not strand
-	# the refund unrecorded and refundable again.
 	id: str | None = None
 	status: str | None = None
 	# Minor units, as Stripe echoes it.
@@ -29,8 +25,7 @@ class BaseStripeClient(ABC):
 	"""Stripe Checkout Sessions and Refunds. A refusal raises the SDK's own `stripe.StripeError`."""
 
 	@abstractmethod
-	def create_checkout_session(self, params: dict) -> StripeCheckoutSession:
-		"""`checkout.sessions.create` with params exactly as Stripe documents them."""
+	def create_checkout_session(self, params: dict) -> StripeCheckoutSession: ...
 
 	@abstractmethod
 	def retrieve_checkout_session(self, session_id: str) -> StripeCheckoutSession: ...

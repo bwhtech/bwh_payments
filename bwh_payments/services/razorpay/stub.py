@@ -15,8 +15,7 @@ from bwh_payments.services.razorpay.base import (
 
 
 class StubRazorpayClient(BaseRazorpayClient):
-	"""In-memory Razorpay, selected under tests. Drive outcomes through the classmethod controls; reset()
-	between tests. Recordings keep Razorpay's own request shapes."""
+	"""In-memory Razorpay for tests. Call reset() in setUp."""
 
 	links: ClassVar[dict[str, RazorpayPaymentLink]] = {}
 	created_links: ClassVar[list[dict]] = []
@@ -30,11 +29,8 @@ class StubRazorpayClient(BaseRazorpayClient):
 		cls.created_refunds = []
 		cls.next_refund_status = "processed"
 
-	# --- controls -----------------------------------------------------------------------------------
-
 	@classmethod
 	def add_link(cls, status: str = "created") -> str:
-		"""A link that exists at Razorpay without this app having created it."""
 		# Unique per call: the doctype enforces a unique order_ref and rows outlive a single test.
 		link_id = f"plink_{frappe.generate_hash(length=12)}"
 		cls.links[link_id] = RazorpayPaymentLink(
@@ -54,11 +50,9 @@ class StubRazorpayClient(BaseRazorpayClient):
 
 	@classmethod
 	def pay(cls, link_id: str) -> str:
-		"""The shopper completes the hosted page: Razorpay captures a payment and closes the link."""
+		"""Capture a payment and close the link."""
 		cls.set_status(link_id, "paid")
 		return cls.add_payment(link_id, "captured")
-
-	# --- API ----------------------------------------------------------------------------------------
 
 	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink:
 		self.created_links.append(payload)
@@ -88,7 +82,6 @@ class StubRazorpayClient(BaseRazorpayClient):
 
 
 def sign_payload(payload: bytes, secret: str) -> str:
-	"""A genuine X-Razorpay-Signature, so tests exercise signature verification instead of bypassing it."""
 	return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
 

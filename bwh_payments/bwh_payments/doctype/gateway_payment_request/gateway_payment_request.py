@@ -55,12 +55,7 @@ class GatewayPaymentRequest(Document):
 		self.validate_amount_precision()
 
 	def validate_amount_precision(self):
-		"""Refuse a charge the document cannot store exactly, rather than quietly rounding it.
-
-		Frappe derives a Currency field's precision from the site's default number format unless
-		System Settings has `use_number_format_from_currency` on, so on a default site a 3-decimal
-		currency such as KWD is rounded to 2 and the shopper is billed a different figure.
-		"""
+		"""Without `use_number_format_from_currency`, a default site rounds KWD to 2 decimals."""
 		exponent = get_minor_unit_exponent(self.currency_code)
 		if flt(self.amount, self.precision("amount")) == flt(self.amount, exponent):
 			return
@@ -78,8 +73,7 @@ class GatewayPaymentRequest(Document):
 			self.create_session()
 
 	def on_update(self):
-		# Every path to Paid (webhook, poll, sweep) saves through here, so the referenced document hears it
-		# exactly once. The frappe/payments convention, so an app written for that settles orders unchanged.
+		# frappe/payments convention, so apps written for it settle orders unchanged.
 		if self.has_value_changed("status") and self.status == "Paid":
 			frappe.get_doc(self.ref_doctype, self.ref_docname).run_method(
 				"on_payment_authorized", "Completed"
@@ -128,12 +122,10 @@ class GatewayPaymentRequest(Document):
 
 	@frappe.whitelist()
 	def sync_status(self):
-		"""Re-read the authoritative status from the gateway. Never trust a browser redirect."""
 		status = self.get_gateway_settings().get_payment_status(self.order_ref)
 
-		# The gateway round-trip is slow, so the lock is taken after it and picks up whatever a webhook
-		# committed meanwhile. Without it this save races that webhook into a TimestampMismatchError,
-		# which the shopper sees as a 500 on the confirmation page.
+		# Locked after the slow gateway call, so a webhook committed meanwhile cannot cause a
+		# TimestampMismatchError.
 		self.lock_refund_ledger()
 
 		if flt(self.refund_amount) > 0:
@@ -163,24 +155,16 @@ class GatewayPaymentRequest(Document):
 		return True
 
 	def get_remaining_refundable_amount(self) -> float:
-		# Refund arithmetic is pinned to the currency's own minor unit, not the field precision, so a
-		# full refund always adds up to exactly what was charged.
 		precision = get_minor_unit_exponent(self.currency_code)
 		return flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
 
 	def resolve_refund_status(self) -> str:
-		# Anything at or above one minor unit is still real money the shopper is owed, and relabelling the
-		# row Refunded would drop it out of REFUNDABLE_STATUSES and strand it forever.
 		if self.get_remaining_refundable_amount() < 10 ** -get_minor_unit_exponent(self.currency_code):
 			return "Refunded"
 		return "Partially Refunded"
 
 	def lock_refund_ledger(self):
-		"""Take a row lock and refresh from it, so the over-refund guard cannot read a stale ledger.
-
-		Without this two concurrent refunds both read refund_amount = 0, both pass the guard and both
-		reach the gateway. The lock is held until the enclosing transaction commits.
-		"""
+		"""Row lock plus reload, so concurrent refunds cannot both pass the over-refund guard."""
 		frappe.db.get_value(
 			"Gateway Payment Request",
 			self.name,
@@ -206,8 +190,7 @@ class GatewayPaymentRequest(Document):
 
 		precision = get_minor_unit_exponent(self.currency_code)
 		remaining = self.get_remaining_refundable_amount()
-		# `flt(amount, precision) or remaining` refunded the whole balance for any sub-minor request,
-		# because flt(0.004, 2) is falsy. Only an omitted amount may mean "everything left".
+		# `is None`, not falsy: flt(0.004, 2) is 0 and must not mean "refund everything".
 		amount = remaining if amount is None else flt(amount, precision)
 
 		if amount <= 0:
@@ -219,9 +202,8 @@ class GatewayPaymentRequest(Document):
 				)
 			)
 
-		# ponytail: the intent log shares this transaction, so a crash between the gateway call and the
-		# commit still loses the record; reconcile from the storefront Orphaned Payments report. Committing
-		# it first would release the row lock above and re-open the double-refund window.
+		# ponytail: the log shares this transaction, so a crash after the gateway call loses it; reconcile
+		# from the Orphaned Payments report. Committing first would drop the row lock.
 		request_log = create_request_log(
 			{
 				"gateway_payment_request": self.name,
@@ -254,8 +236,6 @@ class GatewayPaymentRequest(Document):
 		return {"refund_amount": self.refund_amount, "status": self.status, "refund_id": self.refund_id}
 
 	def append_refund_id(self, refund_id: str | None):
-		# Repeated partial refunds each return a distinct id, so append rather than overwrite — the ids are
-		# the only way to reconcile against a gateway statement.
 		if not refund_id:
 			return
 		existing_ids = [entry for entry in (self.refund_id or "").split(",") if entry]
@@ -271,7 +251,6 @@ class GatewayPaymentRequest(Document):
 		self.refund_payment_entries = ",".join(entries)
 
 	def apply_webhook_status(self, status: str, event_id: str | None = None) -> bool:
-		"""Apply a verified gateway status. Return False when the event is a replay or not applicable."""
 		self.lock_refund_ledger()
 
 		if event_id and self.last_webhook_event_id == event_id:
@@ -288,13 +267,9 @@ class GatewayPaymentRequest(Document):
 
 
 def get_original_payment_entry(payment_entry: str | int) -> str:
-	"""Walk a Payment Entry back to the one it was first amended from.
+	"""Key the refund ledger on the first entry, so an amendment cannot refund twice.
 
-	Cancelling and amending re-issues the entry under a new name, so keying the refund ledger on the
-	current name lets the same refund reach the gateway again for every amendment.
-
-	Returns a string: the ledger is a comma-joined field, so an autoincrement-named `int` would never
-	compare equal to the entry already recorded in it.
+	Returns `str`: an autoincrement `int` name would never match the comma-joined ledger.
 	"""
 	name = payment_entry
 	while amended_from := frappe.db.get_value("Payment Entry", name, "amended_from"):
@@ -303,7 +278,6 @@ def get_original_payment_entry(payment_entry: str | int) -> str:
 
 
 def refund_on_payment_entry(doc, method=None):
-	"""Mirror an outgoing refund Payment Entry back to the gateway that took the money."""
 	if doc.payment_type != "Pay" or not doc.reference_no:
 		return
 
@@ -316,9 +290,7 @@ def refund_on_payment_entry(doc, method=None):
 		return
 
 	payment_request = frappe.get_doc("Gateway Payment Request", request_name)
-	# A supplier payment can carry any reference string; only refund when the Payment Entry was actually
-	# settled through this gateway's Mode of Payment. A blank mode is not a match — treating it as one
-	# refunds real money off nothing more than a coincidental reference_no.
+	# A supplier payment can share the reference_no by chance; the Mode of Payment must match too.
 	if doc.mode_of_payment != payment_request.gateway:
 		return
 
