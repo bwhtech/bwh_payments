@@ -69,6 +69,9 @@ live one. There is no other switch, so a real site can never run on a stub. The 
 decision: currency conversion, URL building, status maps, capture and refund rules, and webhook signature
 checks. Signature checks are local crypto and must never move into a client a stub could replace.
 
+Live HTTP clients pass no timeout: `make_request` accepts one only from Frappe 17. Add it when Frappe 16
+support is dropped.
+
 To add a service, copy `services/razorpay/` and wire `get_client()` the same way.
 
 ### Public API for other apps
@@ -85,7 +88,7 @@ frappe/payments convention, so apps written for it settle orders unchanged.
    `amount`, `currency_code`, optional customer fields).
 2. `before_save` calls `create_session` once (when `order_ref` is empty) and stores `order_ref` (gateway
    session id, unique), `order_url` (checkout URL for the shopper) and the return URLs.
-3. Status moves from `Pending` by one of two paths, both under a row lock (`lock_refund_ledger`):
+3. Status moves from `Pending` by one of two paths, both under a row lock (`lock_row`):
    - **Webhook**: `bwh_payments.bwh_payments.webhook.handle` (guest POST, `?gateway=<profile>`,
      rate-limited) → settings `handle_webhook` verifies and returns a `WebhookEvent` or `None`
      → request found by `order_ref` → `apply_webhook_status` as Administrator (dedupes on
@@ -151,6 +154,10 @@ build a werkzeug `Request` into `frappe.local.request` and call `webhook.handle(
   type annotations. `export_python_type_annotations = True` regenerates the `# begin: auto-generated types`
   block in controllers on migrate; do not edit that block by hand.
 - `use_json_request_body = True`: non-GET calls to this app's endpoints send JSON bodies.
-- Deliberate shortcuts are marked with `# ponytail:` comments that name the limit and the upgrade path.
+- Keep comments rare: only for a non-obvious reason (security, money, a gateway quirk). Do not add
+  `# ponytail:` or similar marker comments.
+- Name variables and functions with simple technical terms that say what they do (`lock_row`,
+  `get_refund_summary`), not jargon or metaphor. Do not rename whitelisted methods, `api.py` functions or
+  stub controls without checking callers in other apps.
 - `get_available_payment_modes` uses a per-worker `site_cache` (1 h TTL), so other workers can briefly
   keep offering a just-disabled gateway.

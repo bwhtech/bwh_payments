@@ -12,7 +12,6 @@ WEBHOOK_ACCEPTED = {"status": "ok"}
 @frappe.whitelist(allow_guest=True, methods=["POST"])
 @rate_limit(limit=120, seconds=60, ip_based=True)
 def handle():
-	"""Public gateway callback. Everything here is untrusted until the gateway's own signature clears it."""
 	gateway = frappe.request.args.get("gateway")
 	if not gateway:
 		return reject()
@@ -28,10 +27,10 @@ def handle():
 
 	try:
 		event = frappe.get_single(profile.gateway_settings).handle_webhook(payload, headers)
-		# Inside the try: a verified delivery the gateway could not turn into an event is still a 400.
+		# Inside the try: an unparseable verified event is still a 400, so the gateway retries.
 		event = WebhookEvent.model_validate(event) if event else None
 	except Exception:
-		# The payload can carry cardholder data, so only the gateway and the traceback are recorded.
+		# Never log the payload: it can carry cardholder data.
 		frappe.log_error(title=f"{gateway} webhook verification failed")
 		log_webhook(gateway, status="Failed")
 		return reject()
@@ -56,14 +55,11 @@ def handle():
 
 	apply_status_as_administrator(payment_request, event.status, event.event_id)
 	log_webhook(gateway, session_id=event.session_id, event_id=event.event_id, status="Completed")
-	# A replayed delivery is still a success as far as the gateway is concerned; anything else and it
-	# keeps retrying forever.
 	return WEBHOOK_ACCEPTED
 
 
 def apply_status_as_administrator(payment_request, status: str, event_id: str | None):
-	# The callback arrives as Guest, but downstream order creation needs a real user context. Restore the
-	# original user afterwards so a long-lived worker does not keep Administrator for the next job.
+	# Downstream order creation needs a real user. Restore after, so the worker does not stay Administrator.
 	session_user = frappe.session.user
 	try:
 		frappe.set_user("Administrator")
@@ -73,12 +69,9 @@ def apply_status_as_administrator(payment_request, status: str, event_id: str | 
 
 
 def reject() -> dict:
-	"""One opaque 400 for every verification failure.
+	"""One opaque 400 for every failure, so callers cannot probe gateways or verifiers.
 
-	A caller who can tell "unknown gateway" from "bad signature" apart can enumerate which gateways this
-	site has configured and probe how far a forged payload gets. The detail stays in the Error Log and the
-	Integration Request. Clearing the message log stops a `frappe.throw` raised inside a gateway's
-	verifier from being echoed back to the caller in `_server_messages`.
+	The message log is cleared so a verifier's `frappe.throw` does not leak in `_server_messages`.
 	"""
 	frappe.local.message_log = []
 	frappe.local.response["http_status_code"] = 400

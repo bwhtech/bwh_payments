@@ -82,7 +82,6 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		)
 
 	def build_success_url(self) -> str:
-		# String-concatenating "?session_id=..." breaks any success URL that already carries a query.
 		if not self.success_url:
 			frappe.throw(_("Please set a Success URL in Stripe Gateway Settings"))
 		parts = urlsplit(self.success_url)

@@ -17,8 +17,7 @@ from bwh_payments.services.tabby.base import (
 
 
 class StubTabbyClient(BaseTabbyClient):
-	"""In-memory Tabby, selected under tests. Drive outcomes through the classmethod controls; reset()
-	between tests. Recordings keep Tabby's own request shapes."""
+	"""In-memory Tabby for tests. Call reset() in setUp."""
 
 	payments: ClassVar[dict[str, TabbyPayment]] = {}
 	created_checkouts: ClassVar[list[dict]] = []
@@ -34,11 +33,8 @@ class StubTabbyClient(BaseTabbyClient):
 		cls.refunds = []
 		cls.next_rejection_reason = None
 
-	# --- controls -----------------------------------------------------------------------------------
-
 	@classmethod
 	def add_payment(cls, status: str = "created", amount: str = "100.00", currency: str = "SAR") -> str:
-		"""A payment that exists at Tabby without this app having created it."""
 		# Unique per call: the doctype enforces a unique order_ref and rows outlive a single test.
 		payment_id = f"pay_tabby_{frappe.generate_hash(length=12)}"
 		cls.payments[payment_id] = TabbyPayment(
@@ -52,15 +48,13 @@ class StubTabbyClient(BaseTabbyClient):
 
 	@classmethod
 	def authorise(cls, payment_id: str):
-		"""The shopper is approved for instalments; no money moves until this app captures."""
+		"""Approve the shopper; no money moves until capture."""
 		cls.set_status(payment_id, "authorized")
 
 	@classmethod
 	def reject_next_checkout(cls, reason: str):
 		"""Tabby declines the next shopper, e.g. "order_amount_too_high"."""
 		cls.next_rejection_reason = reason
-
-	# --- API ----------------------------------------------------------------------------------------
 
 	def create_checkout(self, payload: dict) -> TabbyCheckout:
 		self.created_checkouts.append(payload)

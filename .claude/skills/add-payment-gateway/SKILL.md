@@ -100,8 +100,8 @@ For a new provider:
 - **`cancel_session(session_id)` → bool,** if the provider can cancel or expire a session. Return
   `False` instead of raising when the provider refuses.
 
-Mark deliberate limits with `# ponytail:` comments that name the ceiling and the upgrade path (a missing
-void endpoint, no timeout on `make_request`, and so on).
+Do not add `# ponytail:` marker comments. Comment only a non-obvious reason (security, money, a gateway
+quirk).
 
 ## 5. Tests (stub-driven, in the doctype folder)
 

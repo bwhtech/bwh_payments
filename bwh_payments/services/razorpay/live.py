@@ -10,8 +10,6 @@ from bwh_payments.services.razorpay.base import (
 	RazorpayRefund,
 )
 
-# ponytail: frappe.integrations.utils.make_request takes no timeout, so a hung Razorpay call holds a
-# worker; revisit if Razorpay latency ever shows up in the request log.
 RAZORPAY_BASE_URL = "https://api.razorpay.com/v1"
 RAZORPAY_HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
 SETTINGS_DOCTYPE = "Razorpay Gateway Settings"
@@ -51,7 +49,6 @@ class LiveRazorpayClient(BaseRazorpayClient):
 
 
 def throw_request_error(url: str, exception: Exception) -> NoReturn:
-	"""Razorpay explains a non-2xx in a JSON error body, so the status code alone never names it."""
 	description = read_razorpay_error(exception)
 	log_request(url, error=description or exception)
 	frappe.throw(_("Razorpay rejected the request: {0}").format(description or _("unknown error")))
@@ -71,8 +68,7 @@ def read_response(url: str, response) -> dict:
 
 
 def log_request(url: str, output=None, error=None):
-	# The request payload carries the API key and the shopper's contact details, so only the endpoint and
-	# the outcome are logged.
+	# The payload carries the API key and shopper details, so only the endpoint is logged.
 	create_request_log(
 		{"endpoint": url},
 		service_name="Razorpay",
@@ -86,7 +82,6 @@ def log_request(url: str, output=None, error=None):
 
 
 def summarise_razorpay_entity(response: dict) -> dict:
-	"""Razorpay echoes the shopper's name, email and phone number, so only the ids are logged."""
 	return {"id": response.get("id"), "status": response.get("status")}
 
 

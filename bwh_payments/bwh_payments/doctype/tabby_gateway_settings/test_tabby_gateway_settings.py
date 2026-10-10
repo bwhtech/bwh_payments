@@ -27,15 +27,12 @@ class TestTabbyGatewaySettings(IntegrationTestCase):
 			}
 		)
 
-	# --- session ----------------------------------------------------------
-
 	def test_create_session_keys_the_request_on_the_payment_id_not_the_checkout_id(self):
 		session = self.settings.create_session(12.345, "KWD", reference="GPR-0001")
 
 		self.assertIn(session.session_id, StubTabbyClient.payments)
 		self.assertEqual(session.redirect_url, f"https://checkout.tabby.test/{session.session_id}")
 		self.assertIn("reference_id=GPR-0001", session.success_url)
-		# KWD carries three decimals; a plain str(float) would under-specify it.
 		self.assertEqual(StubTabbyClient.created_checkouts[-1]["payment"]["amount"], "12.345")
 
 	def test_a_currency_tabby_does_not_underwrite_is_refused_before_any_call(self):
@@ -51,8 +48,6 @@ class TestTabbyGatewaySettings(IntegrationTestCase):
 			self.settings.create_session(100, "SAR", reference="GPR-0003")
 
 		self.assertIn("above Tabby's limit", str(raised.exception))
-
-	# --- status and capture -----------------------------------------------
 
 	def test_reading_an_authorised_payment_captures_it_for_the_authorised_amount(self):
 		payment_id = StubTabbyClient.add_payment(amount="250.5", currency="SAR")
@@ -72,8 +67,6 @@ class TestTabbyGatewaySettings(IntegrationTestCase):
 
 		self.assertEqual(self.settings.get_payment_status(payment_id), "Not Paid")
 
-	# --- refund -----------------------------------------------------------
-
 	def test_a_captured_payment_refunds_and_reports_tabbys_refund_id(self):
 		payment_id = StubTabbyClient.add_payment(status="closed")
 
@@ -91,8 +84,6 @@ class TestTabbyGatewaySettings(IntegrationTestCase):
 			self.settings.refund_payment(payment_id, 10, "SAR")
 
 		self.assertEqual(StubTabbyClient.refunds, [])
-
-	# --- webhook ----------------------------------------------------------
 
 	def deliver(self, token: str | None, request_ip: str = "127.0.0.1"):
 		self.addCleanup(setattr, frappe.local, "request_ip", getattr(frappe.local, "request_ip", None))

@@ -11,8 +11,7 @@ from bwh_payments.services.stripe.base import BaseStripeClient, StripeCheckoutSe
 
 
 class StubStripeClient(BaseStripeClient):
-	"""In-memory Stripe, selected under tests. Drive outcomes through the classmethod controls; reset()
-	between tests. Recordings keep Stripe's own request shapes."""
+	"""In-memory Stripe for tests. Call reset() in setUp."""
 
 	sessions: ClassVar[dict[str, StripeCheckoutSession]] = {}
 	created_sessions: ClassVar[list[dict]] = []
@@ -26,17 +25,13 @@ class StubStripeClient(BaseStripeClient):
 		cls.created_refunds = []
 		cls.next_refund_status = "succeeded"
 
-	# --- controls -----------------------------------------------------------------------------------
-
 	@classmethod
 	def pay(cls, session_id: str):
-		"""The shopper completes Checkout: the session closes with a captured PaymentIntent behind it."""
+		"""Complete the session with a captured PaymentIntent."""
 		session = cls.sessions[session_id]
 		session.payment_status = "paid"
 		session.status = "complete"
 		session.payment_intent = f"pi_{session_id}"
-
-	# --- API ----------------------------------------------------------------------------------------
 
 	def create_checkout_session(self, params: dict) -> StripeCheckoutSession:
 		self.created_sessions.append(params)
@@ -77,7 +72,6 @@ class StubStripeClient(BaseStripeClient):
 
 
 def sign_payload(payload: bytes, secret: str, timestamp: int | None = None) -> str:
-	"""A genuine Stripe-Signature header, so tests exercise signature verification instead of bypassing it."""
 	timestamp = timestamp or int(time.time())
 	signed_payload = b"%d." % timestamp + payload
 	signature = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()

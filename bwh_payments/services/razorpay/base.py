@@ -2,8 +2,6 @@ from abc import ABC, abstractmethod
 
 from bwh_payments.services import GatewayModel
 
-# Models mirror Razorpay's JSON, keeping only the fields this app reads, so a live response parses as-is.
-
 
 class RazorpayPayment(GatewayModel):
 	payment_id: str
@@ -14,13 +12,10 @@ class RazorpayPaymentLink(GatewayModel):
 	id: str
 	status: str | None = None
 	short_url: str | None = None
-	# Razorpay sends null rather than [] for a link nobody has paid against.
 	payments: list[RazorpayPayment] | None = None
 
 
 class RazorpayRefund(GatewayModel):
-	# Parsed after the money has moved, so nothing here may be required: a thin echo must not strand
-	# the refund unrecorded and refundable again.
 	id: str | None = None
 	status: str | None = None
 	# Minor units, as Razorpay echoes it.
@@ -31,8 +26,7 @@ class BaseRazorpayClient(ABC):
 	"""Razorpay's Payment Links and Refunds APIs. A rejected call raises `frappe.ValidationError`."""
 
 	@abstractmethod
-	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink:
-		"""POST /payment_links with the body exactly as Razorpay documents it."""
+	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink: ...
 
 	@abstractmethod
 	def get_payment_link(self, link_id: str) -> RazorpayPaymentLink: ...

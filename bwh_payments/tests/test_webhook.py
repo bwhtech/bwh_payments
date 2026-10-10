@@ -88,7 +88,6 @@ class TestWebhook(IntegrationTestCase):
 		self.assertEqual(self.get_status_code(), 400)
 
 	def test_every_verification_failure_answers_with_the_same_opaque_400(self):
-		"""Distinguishable replies let an unauthenticated caller enumerate the configured gateways."""
 		payload = build_checkout_completed_event("cs_test_nothing")
 
 		unknown_gateway = self.post_webhook("Not A Gateway", payload, None)
@@ -100,7 +99,6 @@ class TestWebhook(IntegrationTestCase):
 		self.assertEqual(self.get_status_code(), 400)
 
 	def test_a_rejection_does_not_echo_the_gateway_error_back_to_the_caller(self):
-		"""frappe.throw inside a gateway verifier lands in _server_messages unless the log is cleared."""
 		payload = build_checkout_completed_event("cs_test_nothing")
 
 		self.post_webhook(GATEWAY, payload, None)
