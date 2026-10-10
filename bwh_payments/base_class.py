@@ -1,9 +1,15 @@
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
-class CheckoutSession(BaseModel):
+class GatewayResult(BaseModel):
+	# A gateway from another app may hand back numeric ids. Rejecting one after a refund has moved money
+	# would leave it unrecorded and refundable again.
+	model_config = ConfigDict(coerce_numbers_to_str=True)
+
+
+class CheckoutSession(GatewayResult):
 	session_id: str
 	redirect_url: str
 	success_url: str | None = None
@@ -11,7 +17,7 @@ class CheckoutSession(BaseModel):
 	failure_url: str | None = None
 
 
-class RefundResult(BaseModel):
+class RefundResult(GatewayResult):
 	# Read after the money has moved, so nothing here may be required: a thin result must not strand it.
 	refund_id: str | None = None
 	status: str | None = None
@@ -19,7 +25,7 @@ class RefundResult(BaseModel):
 	amount: float | None = None
 
 
-class WebhookEvent(BaseModel):
+class WebhookEvent(GatewayResult):
 	session_id: str
 	# A Gateway Payment Request `status` value.
 	status: str

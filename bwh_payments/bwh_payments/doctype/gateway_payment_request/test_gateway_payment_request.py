@@ -10,6 +10,7 @@ from frappe.utils.data import flt
 
 from bwh_payments.api import create_payment
 from bwh_payments.currency import to_minor_units
+from bwh_payments.services.stripe.base import StripeRefund
 from bwh_payments.services.stripe.stub import StubStripeClient
 
 GATEWAY = "Stripe Test Gateway"
@@ -290,6 +291,28 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.mark_paid(payment_request)
 
 		with patch.object(type(payment_request.get_gateway_settings()), "refund_payment", return_value=None):
+			payment_request.refund(40)
+
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+		self.assertEqual(payment_request.status, "Partially Refunded")
+
+	def test_a_numeric_refund_id_from_another_apps_gateway_still_books_the_refund(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		with patch.object(
+			type(payment_request.get_gateway_settings()), "refund_payment", return_value={"refund_id": 12345}
+		):
+			payment_request.refund(40)
+
+		self.assertEqual(payment_request.refund_id, "12345")
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def test_a_refund_echo_without_id_or_amount_still_books_the_refund(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		with patch.object(StubStripeClient, "create_refund", return_value=StripeRefund(status="succeeded")):
 			payment_request.refund(40)
 
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)

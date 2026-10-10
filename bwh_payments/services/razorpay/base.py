@@ -19,10 +19,12 @@ class RazorpayPaymentLink(GatewayModel):
 
 
 class RazorpayRefund(GatewayModel):
-	id: str
+	# Parsed after the money has moved, so nothing here may be required: a thin echo must not strand
+	# the refund unrecorded and refundable again.
+	id: str | None = None
 	status: str | None = None
 	# Minor units, as Razorpay echoes it.
-	amount: int
+	amount: int | None = None
 
 
 class BaseRazorpayClient(ABC):

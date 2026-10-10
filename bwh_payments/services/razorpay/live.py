@@ -1,3 +1,5 @@
+from typing import NoReturn
+
 import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
@@ -48,7 +50,7 @@ class LiveRazorpayClient(BaseRazorpayClient):
 		return read_response(url, response)
 
 
-def throw_request_error(url: str, exception: Exception):
+def throw_request_error(url: str, exception: Exception) -> NoReturn:
 	"""Razorpay explains a non-2xx in a JSON error body, so the status code alone never names it."""
 	description = read_razorpay_error(exception)
 	log_request(url, error=description or exception)

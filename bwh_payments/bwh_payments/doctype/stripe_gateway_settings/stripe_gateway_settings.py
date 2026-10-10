@@ -147,6 +147,6 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		if refund.status not in ("succeeded", "pending"):
 			frappe.throw(_("Refund failed with status: {0}").format(refund.status))
 
-		return RefundResult(
-			refund_id=refund.id, status=refund.status, amount=flt(from_minor_units(refund.amount, currency))
-		)
+		if refund.amount is not None:
+			amount = flt(from_minor_units(refund.amount, currency))
+		return RefundResult(refund_id=refund.id, status=refund.status, amount=amount)

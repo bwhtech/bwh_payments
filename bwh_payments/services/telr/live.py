@@ -95,6 +95,10 @@ class LiveTelrClient(BaseTelrClient):
 			log_request(endpoint, error=exception)
 			raise
 
+		if not isinstance(response, dict):
+			log_request(endpoint, error="Telr returned a non-JSON body")
+			frappe.throw(_("Telr returned an unreadable response"))
+
 		# Telr answers 200 on failure too, so the body has to be inspected.
 		if error := response.get("error"):
 			log_request(endpoint, error=error.get("note") or error.get("message"))

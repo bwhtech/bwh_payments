@@ -208,9 +208,9 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 		# The gateway's own echo is round-tripped back to major units so a charge and its refund always
 		# agree to the last minor unit.
-		return RefundResult(
-			refund_id=refund.id, status=refund.status, amount=flt(from_minor_units(refund.amount, currency))
-		)
+		if refund.amount is not None:
+			amount = flt(from_minor_units(refund.amount, currency))
+		return RefundResult(refund_id=refund.id, status=refund.status, amount=amount)
 
 
 def get_customer_details(customer: dict) -> dict:
