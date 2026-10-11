@@ -98,6 +98,10 @@ class GatewayPaymentRequest(Document):
 		gateway_settings = frappe.get_cached_value(
 			"Payment Gateway Profile", self.gateway, "gateway_settings"
 		)
+		if not gateway_settings:
+			frappe.throw(
+				_("{0} is kept for history only and cannot be used").format(frappe.bold(self.gateway))
+			)
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):

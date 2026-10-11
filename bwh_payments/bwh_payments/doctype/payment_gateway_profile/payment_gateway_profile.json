@@ -16,8 +16,8 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Gateway Settings",
-   "options": "DocType",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.enabled",
+   "options": "DocType"
   },
   {
    "fieldname": "column_break_qgbw",
