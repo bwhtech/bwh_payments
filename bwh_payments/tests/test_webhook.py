@@ -1,7 +1,10 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # See license.txt
 
+from unittest.mock import patch
+
 import frappe
+from frappe.geo.doctype.currency.currency import Currency
 from frappe.tests import IntegrationTestCase
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
@@ -12,6 +15,7 @@ from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_paym
 	WEBHOOK_SECRET,
 	configure_stripe_gateway,
 	make_payment_request,
+	remove_stripe_gateway,
 )
 from bwh_payments.services.stripe.stub import StubStripeClient, build_checkout_completed_event, sign_payload
 
@@ -22,6 +26,14 @@ class TestWebhook(IntegrationTestCase):
 		configure_stripe_gateway()
 		self.original_request = getattr(frappe.local, "request", None)
 		self.addCleanup(self.restore_request)
+
+	@classmethod
+	def tearDownClass(cls):
+		super().tearDownClass()
+		# Webhook logs commit, so they outlive the class rollback and would read as redeliveries.
+		frappe.db.rollback()
+		remove_stripe_gateway()
+		frappe.db.commit()
 
 	def restore_request(self):
 		frappe.local.request = self.original_request
@@ -135,3 +147,79 @@ class TestWebhook(IntegrationTestCase):
 		self.assertTrue(logged)
 		for row in logged:
 			self.assertNotIn("payment_status", row.data)
+
+	def get_webhook_logs(self, event_id: str) -> list:
+		return frappe.get_all(
+			"Integration Request",
+			filters={"integration_request_service": f"{GATEWAY} Webhook", "request_id": event_id},
+			fields=["name", "status", "reference_docname"],
+		)
+
+	def post_paid_event(self, payment_request, event_id: str):
+		payload = build_checkout_completed_event(payment_request.order_ref, event_id=event_id)
+		StubStripeClient.pay(payment_request.order_ref)
+		return self.post_webhook(GATEWAY, payload, sign_payload(payload, WEBHOOK_SECRET))
+
+	def test_a_document_that_fails_to_settle_is_logged_and_the_gateway_still_gets_200(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		with patch.object(Currency, "on_payment_authorized", create=True, side_effect=Exception("broken")):
+			response = self.post_paid_event(payment_request, "evt_settle_fails")
+
+		self.assertEqual(response["status"], "ok")
+		self.assertIsNone(self.get_status_code())
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Pending")
+		[log] = self.get_webhook_logs("evt_settle_fails")
+		self.assertEqual(log.status, "Failed")
+		self.assertEqual(log.reference_docname, payment_request.name)
+
+	def test_a_failed_delivery_settles_when_retried_after_the_fix(self):
+		payment_request = make_payment_request(100, "SAR")
+		with patch.object(Currency, "on_payment_authorized", create=True, side_effect=Exception("broken")):
+			self.post_paid_event(payment_request, "evt_retry")
+		[log] = self.get_webhook_logs("evt_retry")
+
+		webhook.retry_webhook(log.name)
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertEqual(frappe.db.get_value("Integration Request", log.name, "status"), "Completed")
+
+	def test_only_a_system_manager_can_retry_a_delivery(self):
+		payment_request = make_payment_request(100, "SAR")
+		with patch.object(Currency, "on_payment_authorized", create=True, side_effect=Exception("broken")):
+			self.post_paid_event(payment_request, "evt_retry_guest")
+		[log] = self.get_webhook_logs("evt_retry_guest")
+
+		frappe.set_user("Guest")
+		self.addCleanup(frappe.set_user, "Administrator")
+		with self.assertRaises(frappe.PermissionError):
+			webhook.retry_webhook(log.name)
+
+	def test_a_redelivered_event_is_queued_once(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		self.post_paid_event(payment_request, "evt_twice")
+		self.post_paid_event(payment_request, "evt_twice")
+
+		self.assertEqual(len(self.get_webhook_logs("evt_twice")), 1)
+
+	def test_a_deadlock_is_handed_back_to_the_job_runner_to_retry(self):
+		payment_request = make_payment_request(100, "SAR")
+		with (
+			patch.object(
+				type(payment_request), "apply_webhook_status", side_effect=frappe.QueryDeadlockError
+			),
+			self.assertRaises(frappe.RetryBackgroundJobError),
+		):
+			webhook.process_webhook(
+				webhook.log_webhook(
+					GATEWAY,
+					session_id=payment_request.order_ref,
+					event_id="evt_deadlock",
+					status="Queued",
+					reference_docname=payment_request.name,
+					event_status="Paid",
+				).name
+			)

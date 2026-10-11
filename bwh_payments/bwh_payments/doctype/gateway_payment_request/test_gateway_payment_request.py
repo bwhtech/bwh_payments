@@ -60,6 +60,8 @@ def remove_stripe_gateway():
 			"Gateway Payment Request", request_name, ignore_permissions=True, delete_permanently=True
 		)
 
+	frappe.db.delete("Integration Request", {"integration_request_service": f"{GATEWAY} Webhook"})
+
 	frappe.delete_doc(
 		"Payment Gateway Profile", GATEWAY, ignore_missing=True, ignore_permissions=True, force=True
 	)

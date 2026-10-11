@@ -78,10 +78,11 @@ def sign_payload(payload: bytes, secret: str, timestamp: int | None = None) -> s
 	return f"t={timestamp},v1={signature}"
 
 
-def build_checkout_completed_event(session_id: str, event_id: str = "evt_test_0001") -> bytes:
+def build_checkout_completed_event(session_id: str, event_id: str | None = None) -> bytes:
 	return json.dumps(
 		{
-			"id": event_id,
+			# Unique by default: webhook logs outlive a test and redeliveries are deduped on this id.
+			"id": event_id or f"evt_{frappe.generate_hash(length=12)}",
 			"type": "checkout.session.completed",
 			"data": {"object": {"id": session_id, "payment_status": "paid"}},
 		}
