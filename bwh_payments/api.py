@@ -3,18 +3,27 @@
 import frappe
 from frappe import _
 
+from bwh_payments.base_class import GatewayOption
 from bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_request import (
 	GatewayPaymentRequest,
 )
-from bwh_payments.bwh_payments.utils import get_available_payment_modes, resolve_payment_mode
-from bwh_payments.currency import from_minor_units, to_minor_units
+from bwh_payments.bwh_payments.utils import (
+	get_available_payment_modes,
+	get_gateway_settings,
+	resolve_payment_mode,
+	supports_currency,
+)
+from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
 
 __all__ = [
+	"GatewayOption",
 	"create_payment",
 	"from_minor_units",
+	"get_gateway_options",
 	"get_payment_gateways",
 	"resolve_payment_mode",
 	"to_minor_units",
+	"validate_currency",
 ]
 
 get_payment_gateways = get_available_payment_modes
@@ -45,3 +54,25 @@ def create_payment(
 			**fields,
 		}
 	).insert(ignore_permissions=True)
+
+
+def get_gateway_options(currency: str | None = None) -> list[GatewayOption]:
+	"""Enabled gateways, with logos, that can take `currency` (every enabled one when None)."""
+	options = []
+	for gateway in get_available_payment_modes():
+		settings = get_gateway_settings(gateway)
+		if currency and not supports_currency(settings, currency):
+			continue
+		options.append(
+			GatewayOption(
+				name=gateway, title=gateway, logo=settings.logo, logo_dark=settings.logo_dark or settings.logo
+			)
+		)
+	return options
+
+
+def validate_currency(gateway: str, currency: str):
+	"""Throw unless `gateway` can charge in `currency`, before any checkout is opened."""
+	validate_transaction_currency(currency)
+	if not supports_currency(get_gateway_settings(gateway), currency):
+		frappe.throw(_("{0} cannot take payments in {1}").format(frappe.bold(gateway), frappe.bold(currency)))

@@ -42,6 +42,9 @@ RAZORPAY_EVENT_ID_HEADER = "X-Razorpay-Event-Id"
 
 
 class RazorpayGatewaySettings(Document, PaymentGatewayBase):
+	logo = "/assets/bwh_payments/images/gateways/razorpay.svg"
+	logo_dark = "/assets/bwh_payments/images/gateways/razorpay-dark.svg"
+
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 

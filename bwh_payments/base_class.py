@@ -42,8 +42,20 @@ class WebhookEvent(GatewayResult):
 		return self
 
 
+class GatewayOption(BaseModel):
+	"""A gateway as a storefront lists it. Logos are site-relative asset paths."""
+
+	name: str
+	title: str
+	logo: str | None = None
+	logo_dark: str | None = None
+
+
 class PaymentGatewayBase(ABC):
 	"""Contract for every `<Gateway> Gateway Settings` Single. Amounts are in major units (12.34)."""
+
+	logo: str | None = None
+	logo_dark: str | None = None
 
 	@abstractmethod
 	def create_session(
@@ -69,6 +81,10 @@ class PaymentGatewayBase(ABC):
 
 	def cancel_session(self, session_id: str) -> bool:
 		return False
+
+	def supported_currencies(self) -> tuple[str, ...] | None:
+		"""ISO codes this gateway can charge in, or None for any currency the site has."""
+		return None
 
 	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult | None:
 		"""What the gateway now says about a refund, or None when it cannot be asked."""

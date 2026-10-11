@@ -37,6 +37,18 @@ def get_localised_url(url: str) -> str:
 	return urlunsplit((parts.scheme, parts.netloc, "/".join(segments), parts.query, parts.fragment))
 
 
+def get_gateway_settings(gateway: str):
+	"""The `<Gateway> Gateway Settings` Single behind a Payment Gateway Profile."""
+	return frappe.get_cached_doc(
+		frappe.get_cached_value("Payment Gateway Profile", gateway, "gateway_settings")
+	)
+
+
+def supports_currency(settings, currency: str) -> bool:
+	supported = settings.supported_currencies()
+	return supported is None or currency.strip().upper() in supported
+
+
 @contextmanager
 def run_as_administrator():
 	"""Settling an order downstream needs a real user. Restored after, so a worker does not stay Administrator."""
