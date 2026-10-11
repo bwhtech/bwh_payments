@@ -39,8 +39,12 @@ PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport
 ### The gateway contract
 
 `bwh_payments/base_class.py` defines `PaymentGatewayBase` (ABC): `create_session`, `get_payment_status`,
-`refund_payment`, `handle_webhook`, plus optional `cancel_session`. Results are pydantic models:
-`CheckoutSession`, `RefundResult`, and `WebhookEvent | None`. Callers read them through
+`refund_payment`, `handle_webhook`. Optional methods have defaults, so a third-party gateway that skips them
+keeps working: `cancel_session` (False), `get_transaction_ref` (the settled payment's id; None),
+`get_refund_status` (None = cannot report), `supported_currencies` (None = any), and the `logo` /
+`logo_dark` class attributes. `create_session` also takes an optional `return_url`, passed only when set.
+Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
+carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`). Callers read them through
 `<Model>.model_validate`, so a third-party gateway that still returns dicts keeps working. Each gateway is a
 **Single DocType** `<Name> Gateway Settings` whose controller inherits `(Document, PaymentGatewayBase)` and
 holds the credentials (as `Password` fields, read with `get_password`).
@@ -78,27 +82,56 @@ To add a service, copy `services/razorpay/` and wire `get_client()` the same way
 
 ### Public API for other apps
 
-`bwh_payments/api.py` is the supported import surface: `create_payment(ref_doctype, ref_docname, amount,
-currency, gateway, **fields)` (`fields` limited to `company` and `customer_*`), `get_payment_gateways`, `resolve_payment_mode`, `to_minor_units`,
-`from_minor_units`. It skips permission checks, so never whitelist it as it stands. When a request turns
-`Paid`, `on_update` calls `ref_doc.run_method("on_payment_authorized", "Completed")` once. This is the
-frappe/payments convention, so apps written for it settle orders unchanged.
+`bwh_payments/api.py` is the supported import surface. None of it checks permissions, so never whitelist it
+as it stands.
+
+- `create_payment(ref_doctype, ref_docname, amount, currency, gateway, **fields)`: `fields` limited to
+  `company`, `redirect_to` (a path on this site) and `customer_*`.
+- `get_payment_gateways` (names), `get_gateway_options(currency=None)` (`GatewayOption`: name, title,
+  logos), `validate_currency(gateway, currency)`, `resolve_payment_mode`.
+- `refund(payment_request, amount=None, reference=None)` returns the Gateway Refund;
+  `sync_refunds(payment_request)`.
+- `record_external_payment` / `record_external_refund`: import history settled elsewhere, idempotent,
+  no callbacks.
+- `to_minor_units`, `from_minor_units`.
+
+Callbacks on the referenced document: when a request turns `Paid`, `on_update` calls
+`run_method("on_payment_authorized", "Completed")` once (the frappe/payments convention). Every Gateway
+Refund status change calls `run_method("on_refund_update", refund)`; `refund.reference` is the caller's id.
+An insert that is already settled is an import and fires neither.
+
+`bwh_payments/testing.py` lets consumer apps test against the in-memory gateway without naming a provider:
+`configure_test_gateway`, `pay`, `set_next_refund_status`, `set_refund_status`, `send_refund_webhook`,
+`send_external_refund_webhook`, `without_commits`. `bwh_payments/migrate/frappe_payments.py`
+`import_gateways()` turns frappe/payments gateways into profiles with the same names.
 
 ### Payment flow
 
 1. Caller inserts a **Gateway Payment Request** (`ref_doctype`/`ref_docname`, `gateway` = profile name,
-   `amount`, `currency_code`, optional customer fields).
+   `amount`, `currency_code`, optional customer fields and `redirect_to`). A new checkout must start
+   `Pending`; `amount`, `currency_code`, `gateway` and `order_ref` are `set_only_once`.
 2. `before_save` calls `create_session` once (when `order_ref` is empty) and stores `order_ref` (gateway
-   session id, unique), `order_url` (checkout URL for the shopper) and the return URLs.
-3. Status moves from `Pending` by one of two paths, both under a row lock (`lock_row`):
-   - **Webhook**: `bwh_payments.bwh_payments.webhook.handle` (guest POST, `?gateway=<profile>`,
-     rate-limited) → settings `handle_webhook` verifies and returns a `WebhookEvent` or `None`
-     → request found by `order_ref` → `apply_webhook_status` as Administrator (dedupes on
-     `last_webhook_event_id`, only writes from `Pending`).
-   - **Pull**: whitelisted `sync_status` asks the gateway. Return pages must call this; never trust the
-     browser redirect.
-4. `refund(amount=None, payment_entry=None)` does full or partial refunds with an over-refund guard, keeps
-   `refund_amount`, a comma-joined `refund_id` list, and sets `Partially Refunded` / `Refunded`.
+   session id, unique), `order_url` (checkout URL for the shopper) and the return URLs. With `redirect_to`,
+   every return URL is `checkout.return_from_gateway?request=<name>`.
+3. Status moves from `Pending` by one of three paths, all under a row lock (`lock_row`). On the move to
+   `Paid`, `gateway_transaction_ref` is read through `get_transaction_ref` (a failure never blocks it).
+   - **Webhook**: `webhook.handle` (guest POST, `?gateway=<profile>`, rate-limited) verifies the delivery,
+     logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
+     queues `process_webhook`. The job applies it as Administrator; a failure is rolled back to a
+     savepoint, logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
+     are raised as `RetryBackgroundJobError`, because Frappe's job runner does not retry the
+     `QueryDeadlockError` / `QueryTimeoutError` it wraps them in.
+   - **Return**: `checkout.return_from_gateway` (guest GET, rate-limited) runs `sync_status` and redirects
+     to `redirect_to`. Never trust the browser redirect itself.
+   - **Pull**: whitelisted `sync_status` asks the gateway.
+4. `create_refund(amount=None, reference=None, payment_entry=None)` checks the amount under the row lock,
+   inserts a **Gateway Refund** as `Pending` and commits it before calling the gateway, so the reservation
+   holds once the lock is gone (Pending refunds count against what is left). The gateway's answer is
+   normalised to `Pending` / `Processed` / `Failed`; a refusal is kept as `Failed` with its error. Only a
+   `Processed` refund adds to `refund_amount` and sets `Partially Refunded` / `Refunded`. Pending refunds
+   settle by refund webhook or `sync_refunds`; a refund raised on the gateway's dashboard arrives by
+   webhook and is found through `gateway_transaction_ref`. `refund()` and `release_if_unpaid()` are not
+   whitelisted: Frappe's `run_doc_method` checks only read permission.
 5. ERPNext bridge (`hooks.py` `doc_events`): submitting a `Payment Entry` with `payment_type = "Pay"`,
    `reference_no` = `order_ref` and `mode_of_payment` = the gateway profile name refunds through the
    gateway. Amended entries are traced back via `amended_from` so a refund is never sent twice.
@@ -106,11 +139,13 @@ frappe/payments convention, so apps written for it settle orders unchanged.
 ### Gateway-specific behavior worth knowing
 
 - **Stripe**: official SDK through a `stripe.StripeClient` per `LiveStripeClient` (never module-level
-  `stripe.api_key`). SDK objects are attribute-based, so the live client parses with `from_attributes=True`.
-  The `stripe` version range in `pyproject.toml` is constrained by `frappe/payments` in the same venv; read
-  the comment there before changing it.
+  `stripe.api_key`). SDK objects are attribute-based (no `.get()`), so the live client parses with `from_attributes=True`.
+  Refund events: `refund.created`, `refund.updated`, `refund.failed`, `charge.refund.updated`.
+  `stripe>=12.5` cannot share a venv cleanly with frappe/payments' `stripe~=10.12` pin.
 - **Razorpay**: raw HTTP (Payment Links API) via `frappe.integrations.utils.make_post_request` /
-  `make_get_request`, no SDK.
+  `make_get_request`, no SDK. Refund events: `refund.created` (pending), `refund.processed`,
+  `refund.failed`. A session id starting `pay_` is a payment imported from before Payment Links and is
+  refunded directly.
 - **Telr**: no signed webhook. `handle_webhook` returns `None` on purpose; status comes only from
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
@@ -131,7 +166,11 @@ frappe/payments convention, so apps written for it settle orders unchanged.
 Every verification failure returns the same opaque 400 (`reject()`), and `message_log` is cleared so a
 `frappe.throw` from a verifier does not leak. A verified delivery that `WebhookEvent` cannot validate is a
 400 too, so the gateway retries it and it lands in the Error Log. Do not log webhook payloads; they can contain cardholder
-data. Every call is recorded as an Integration Request via `create_request_log`.
+data. Every call is recorded as an Integration Request via `create_request_log`, holding only the parsed
+`WebhookEvent` (ids, status, amounts).
+
+`redirect_to` must be a path on this site (`is_local_path` refuses absolute URLs, `//host` and `/\host`),
+because `return_from_gateway` is a guest endpoint that redirects to it.
 
 ## Tests
 
@@ -139,9 +178,10 @@ Tests are `IntegrationTestCase` and never touch the network. Controllers pick th
 tests on their own, so tests do not patch transports: call `Stub<Service>Client.reset()` in `setUp`, drive
 the outcome with its controls, and assert on its recordings. The real controller code runs every time.
 
-Frappe 17's `IntegrationTestCase` rolls back only at class end, and `create_request_log` (webhook and refund
-logging) commits. That is why the Stripe and Razorpay fixtures come with `remove_*_gateway` helpers that run
-in `tearDownClass`.
+Frappe 17's `IntegrationTestCase` rolls back only at class end, and `create_request_log` (webhook logging)
+and `create_refund` (the reservation) commit. That is why the Stripe and Razorpay fixtures come with
+`remove_*_gateway` helpers that run in `tearDownClass`, and why consumer apps wrap their test classes in
+`testing.without_commits()`. Stub event ids are unique by default: webhook logs dedupe redeliveries.
 
 Reuse the fixtures `configure_stripe_gateway` and `make_payment_request` (in
 `test_gateway_payment_request.py`) and `configure_razorpay_gateway` (in `test_razorpay_gateway_settings.py`).
@@ -161,5 +201,5 @@ build a werkzeug `Request` into `frappe.local.request` and call `webhook.handle(
 - Name variables and functions with simple technical terms that say what they do (`lock_row`,
   `get_refund_summary`), not jargon or metaphor. Do not rename whitelisted methods, `api.py` functions or
   stub controls without checking callers in other apps.
-- `get_available_payment_modes` uses a per-worker `site_cache` (1 h TTL), so other workers can briefly
-  keep offering a just-disabled gateway.
+- `get_available_payment_modes` uses `redis_cache` (1 h TTL), cleared on profile update, trash and rename,
+  and again after commit or rollback.
