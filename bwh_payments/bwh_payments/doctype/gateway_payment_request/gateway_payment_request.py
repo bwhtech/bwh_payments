@@ -276,6 +276,17 @@ class GatewayPaymentRequest(Document):
 			if result:
 				refund.apply_gateway_status(RefundResult.model_validate(result).status)
 
+	def record_external_refund(self, refund_id: str, amount: float):
+		"""Record a refund raised outside this app, e.g. from the gateway's dashboard."""
+		return frappe.get_doc(
+			{
+				"doctype": "Gateway Refund",
+				"payment_request": self.name,
+				"refund_id": refund_id,
+				"amount": amount,
+			}
+		).insert(ignore_permissions=True)
+
 	def get_refund_for_payment_entry(self, payment_entry: str):
 		name = frappe.db.get_value(
 			"Gateway Refund", {"payment_entry": payment_entry, "status": ["!=", "Failed"]}, "name"

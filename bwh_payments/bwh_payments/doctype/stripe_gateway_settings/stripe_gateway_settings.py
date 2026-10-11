@@ -19,6 +19,9 @@ from bwh_payments.services.stripe.stub import StubStripeClient
 STRIPE_SESSION_ID_PLACEHOLDER = "{CHECKOUT_SESSION_ID}"
 
 
+STRIPE_REFUND_EVENTS = ("refund.created", "refund.updated", "refund.failed", "charge.refund.updated")
+
+
 class StripeGatewaySettings(Document, PaymentGatewayBase):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -118,6 +121,15 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 
 		event = stripe.Webhook.construct_event(payload, signature, webhook_secret)
 
+		if event["type"] in STRIPE_REFUND_EVENTS:
+			refund = event["data"]["object"]
+			return WebhookEvent(
+				refund_id=refund["id"],
+				status=refund["status"],
+				refund_amount=from_minor_units(refund["amount"], refund["currency"]),
+				transaction_ref=getattr(refund, "payment_intent", None),
+				event_id=event["id"],
+			)
 		if event["type"] != "checkout.session.completed":
 			return None
 

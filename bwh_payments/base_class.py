@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class GatewayResult(BaseModel):
@@ -24,9 +24,22 @@ class RefundResult(GatewayResult):
 
 
 class WebhookEvent(GatewayResult):
-	session_id: str
+	"""A payment event carries `session_id`; a refund event carries `refund_id` instead."""
+
+	session_id: str | None = None
 	status: str
 	event_id: str | None = None
+	refund_id: str | None = None
+	# Major units. Needed to record a refund raised outside this app.
+	refund_amount: float | None = None
+	# The settled payment's id, which finds the request for a refund raised outside this app.
+	transaction_ref: str | None = None
+
+	@model_validator(mode="after")
+	def require_session_or_refund(self):
+		if not (self.session_id or self.refund_id):
+			raise ValueError("A webhook event needs a session_id or a refund_id")
+		return self
 
 
 class PaymentGatewayBase(ABC):

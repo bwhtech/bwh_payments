@@ -31,6 +31,7 @@ RAZORPAY_AUTHORISED_STATUS = "authorized"
 RAZORPAY_CANCELLED_STATUS = "cancelled"
 RAZORPAY_CAPTURED_STATUS = "captured"
 RAZORPAY_PAID_EVENT = "payment_link.paid"
+RAZORPAY_REFUND_EVENTS = ("refund.created", "refund.processed", "refund.failed")
 # Payments taken before Payment Links (e.g. imported from frappe/payments) are keyed on the payment id.
 RAZORPAY_PAYMENT_ID_PREFIX = "pay_"
 RAZORPAY_ACCEPTED_REFUND_STATUSES = ("processed", "pending")
@@ -156,6 +157,8 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 		# parse_json passes bytes through untouched.
 		event = frappe.parse_json(payload.decode())
+		if event.get("event") in RAZORPAY_REFUND_EVENTS:
+			return read_refund_event(event, event_id)
 		if event.get("event") != RAZORPAY_PAID_EVENT:
 			return None
 
@@ -206,6 +209,18 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		if refund.amount is not None:
 			amount = flt(from_minor_units(refund.amount, currency))
 		return RefundResult(refund_id=refund.id, status=refund.status, amount=amount)
+
+
+def read_refund_event(event: dict, event_id: str) -> WebhookEvent:
+	refund = ((event.get("payload") or {}).get("refund") or {}).get("entity") or {}
+	currency = refund.get("currency") or "INR"
+	return WebhookEvent(
+		refund_id=refund.get("id"),
+		status=refund.get("status") or "",
+		refund_amount=from_minor_units(refund.get("amount") or 0, currency),
+		transaction_ref=refund.get("payment_id"),
+		event_id=event_id,
+	)
 
 
 def get_customer_details(customer: dict) -> dict:

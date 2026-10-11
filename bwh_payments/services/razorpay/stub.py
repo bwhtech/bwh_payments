@@ -106,3 +106,25 @@ def build_payment_link_event(link_id: str, status: str = "paid", event: str = "p
 			"payload": {"payment_link": {"entity": {"id": link_id, "status": status}}},
 		}
 	).encode()
+
+
+def build_refund_event(
+	refund_id: str, payment_id: str, status: str, amount: int, currency: str = "INR"
+) -> bytes:
+	return json.dumps(
+		{
+			"entity": "event",
+			"event": f"refund.{status}",
+			"payload": {
+				"refund": {
+					"entity": {
+						"id": refund_id,
+						"payment_id": payment_id,
+						"status": status,
+						"amount": amount,
+						"currency": currency,
+					}
+				}
+			},
+		}
+	).encode()

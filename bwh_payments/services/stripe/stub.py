@@ -100,3 +100,30 @@ def build_checkout_completed_event(session_id: str, event_id: str | None = None)
 			"data": {"object": {"id": session_id, "payment_status": "paid"}},
 		}
 	).encode()
+
+
+def build_refund_event(
+	refund_id: str,
+	payment_intent: str,
+	status: str,
+	amount: int,
+	currency: str,
+	event_type: str = "refund.updated",
+	event_id: str | None = None,
+) -> bytes:
+	return json.dumps(
+		{
+			"id": event_id or f"evt_{frappe.generate_hash(length=12)}",
+			"type": event_type,
+			"data": {
+				"object": {
+					"id": refund_id,
+					"object": "refund",
+					"payment_intent": payment_intent,
+					"status": status,
+					"amount": amount,
+					"currency": currency,
+				}
+			},
+		}
+	).encode()

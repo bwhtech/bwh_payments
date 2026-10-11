@@ -40,9 +40,9 @@ def handle():
 		log_webhook(gateway, status="Completed")
 		return WEBHOOK_ACCEPTED
 
-	request_name = frappe.db.get_value("Gateway Payment Request", {"order_ref": event.session_id}, "name")
+	request_name = find_payment_request(event)
 	if not request_name:
-		log_webhook(gateway, session_id=event.session_id, event_id=event.event_id, status="Failed")
+		log_webhook(gateway, event=event, status="Failed")
 		return WEBHOOK_ACCEPTED
 
 	payment_request = frappe.get_doc("Gateway Payment Request", request_name)
@@ -51,7 +51,7 @@ def handle():
 			title=f"{gateway} webhook gateway mismatch",
 			message=f"URL gateway: {gateway}, request gateway: {payment_request.gateway}",
 		)
-		log_webhook(gateway, session_id=event.session_id, event_id=event.event_id, status="Failed")
+		log_webhook(gateway, event=event, status="Failed")
 		return reject()
 
 	# The gateway resends until it gets a 2xx, so a redelivery must not queue the event twice.
@@ -61,16 +61,25 @@ def handle():
 	):
 		return WEBHOOK_ACCEPTED
 
-	log = log_webhook(
-		gateway,
-		session_id=event.session_id,
-		event_id=event.event_id,
-		status="Queued",
-		reference_docname=request_name,
-		event_status=event.status,
-	)
+	log = log_webhook(gateway, event=event, status="Queued", reference_docname=request_name)
 	enqueue_webhook(log.name)
 	return WEBHOOK_ACCEPTED
+
+
+def find_payment_request(event: WebhookEvent) -> str | None:
+	if not event.refund_id:
+		return frappe.db.get_value("Gateway Payment Request", {"order_ref": event.session_id}, "name")
+
+	if request_name := frappe.db.get_value(
+		"Gateway Refund", {"refund_id": event.refund_id}, "payment_request"
+	):
+		return request_name
+	# A refund raised in the gateway's dashboard is only known by the payment it refunds.
+	if event.transaction_ref:
+		return frappe.db.get_value(
+			"Gateway Payment Request", {"gateway_transaction_ref": event.transaction_ref}, "name"
+		)
+	return None
 
 
 def enqueue_webhook(integration_request: str):
@@ -90,12 +99,12 @@ def process_webhook(integration_request: str):
 	`retry_webhook` once fixed.
 	"""
 	log = frappe.get_doc("Integration Request", integration_request)
-	data = frappe.parse_json(log.data)
+	event = WebhookEvent.model_validate(frappe.parse_json(log.data))
 
 	frappe.db.savepoint(WEBHOOK_SAVEPOINT)
 	try:
 		payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
-		apply_status_as_administrator(payment_request, data.status, data.event_id)
+		apply_event_as_administrator(payment_request, event)
 	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError) as error:
 		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		# Frappe's job runner retries only RetryBackgroundJobError, not the DB errors it wraps.
@@ -121,14 +130,33 @@ def retry_webhook(integration_request: str) -> None:
 	enqueue_webhook(log.name)
 
 
-def apply_status_as_administrator(payment_request, status: str, event_id: str | None):
+def apply_event_as_administrator(payment_request, event: WebhookEvent):
 	# Downstream order creation needs a real user. Restore after, so the worker does not stay Administrator.
 	session_user = frappe.session.user
 	try:
 		frappe.set_user("Administrator")
-		payment_request.apply_webhook_status(status, event_id)
+		if event.refund_id:
+			apply_refund_event(payment_request, event)
+		else:
+			payment_request.apply_webhook_status(event.status, event.event_id)
 	finally:
 		frappe.set_user(session_user)
+
+
+def apply_refund_event(payment_request, event: WebhookEvent):
+	if name := frappe.db.get_value("Gateway Refund", {"refund_id": event.refund_id}, "name"):
+		refund = frappe.get_doc("Gateway Refund", name)
+	elif frappe.db.exists(
+		"Gateway Refund",
+		{"payment_request": payment_request.name, "refund_id": ["is", "not set"], "status": "Pending"},
+	):
+		# One of our refunds is still waiting for the gateway's answer and may be this one; recording
+		# it now as a stranger would count it twice.
+		raise frappe.RetryBackgroundJobError
+	else:
+		refund = payment_request.record_external_refund(event.refund_id, event.refund_amount)
+
+	refund.apply_gateway_status(event.status, event.event_id)
 
 
 def reject() -> dict:
@@ -143,17 +171,17 @@ def reject() -> dict:
 
 def log_webhook(
 	gateway: str,
-	session_id: str | None = None,
-	event_id: str | None = None,
 	status: str = "Queued",
+	event: WebhookEvent | None = None,
 	reference_docname: str | None = None,
-	event_status: str | None = None,
 ):
+	# The parsed event only: ids, statuses and amounts, never the delivered payload.
+	data = {"gateway": gateway, **(event.model_dump(exclude_none=True) if event else {})}
 	return create_request_log(
-		{"gateway": gateway, "session_id": session_id, "event_id": event_id, "status": event_status},
+		data,
 		service_name=f"{gateway} Webhook",
 		status=status,
 		reference_doctype="Gateway Payment Request",
 		reference_docname=reference_docname,
-		request_id=event_id,
+		request_id=event.event_id if event else None,
 	)

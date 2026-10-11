@@ -6,9 +6,11 @@ from unittest.mock import patch
 import frappe
 from frappe.geo.doctype.currency.currency import Currency
 from frappe.tests import IntegrationTestCase
+from frappe.utils.data import flt
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
+from bwh_payments.base_class import WebhookEvent
 from bwh_payments.bwh_payments import webhook
 from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_payment_request import (
 	GATEWAY,
@@ -17,7 +19,12 @@ from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_paym
 	make_payment_request,
 	remove_stripe_gateway,
 )
-from bwh_payments.services.stripe.stub import StubStripeClient, build_checkout_completed_event, sign_payload
+from bwh_payments.services.stripe.stub import (
+	StubStripeClient,
+	build_checkout_completed_event,
+	build_refund_event,
+	sign_payload,
+)
 
 
 class TestWebhook(IntegrationTestCase):
@@ -216,10 +223,27 @@ class TestWebhook(IntegrationTestCase):
 			webhook.process_webhook(
 				webhook.log_webhook(
 					GATEWAY,
-					session_id=payment_request.order_ref,
-					event_id="evt_deadlock",
-					status="Queued",
+					event=WebhookEvent(
+						session_id=payment_request.order_ref, status="Paid", event_id="evt_deadlock"
+					),
 					reference_docname=payment_request.name,
-					event_status="Paid",
 				).name
 			)
+
+	def test_a_succeeded_refund_event_settles_the_pending_refund(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		StubStripeClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(30)
+		payload = build_refund_event(
+			refund.refund_id, payment_request.gateway_transaction_ref, "succeeded", 3000, "sar"
+		)
+
+		response = self.post_webhook(GATEWAY, payload, sign_payload(payload, WEBHOOK_SECRET))
+
+		self.assertEqual(response["status"], "ok")
+		refund.reload()
+		payment_request.reload()
+		self.assertEqual(refund.status, "Processed")
+		self.assertEqual(flt(payment_request.refund_amount), 30)
