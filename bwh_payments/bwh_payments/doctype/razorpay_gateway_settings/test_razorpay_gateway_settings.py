@@ -51,6 +51,15 @@ def configure_razorpay_gateway():
 
 def remove_razorpay_gateway():
 	"""`create_request_log` commits, so these tests escape the rollback and need this cleanup."""
+	frappe.db.delete(
+		"Gateway Refund",
+		{
+			"payment_request": [
+				"in",
+				frappe.get_all("Gateway Payment Request", {"gateway": RAZORPAY_GATEWAY}, pluck="name"),
+			]
+		},
+	)
 	for request_name in frappe.get_all(
 		"Gateway Payment Request", filters={"gateway": RAZORPAY_GATEWAY}, pluck="name"
 	):

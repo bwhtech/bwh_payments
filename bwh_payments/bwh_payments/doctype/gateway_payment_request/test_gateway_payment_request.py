@@ -55,6 +55,15 @@ def configure_stripe_gateway():
 
 def remove_stripe_gateway():
 	"""`create_request_log` commits, so refund tests escape the rollback and need this cleanup."""
+	frappe.db.delete(
+		"Gateway Refund",
+		{
+			"payment_request": [
+				"in",
+				frappe.get_all("Gateway Payment Request", {"gateway": GATEWAY}, pluck="name"),
+			]
+		},
+	)
 	for request_name in frappe.get_all("Gateway Payment Request", filters={"gateway": GATEWAY}, pluck="name"):
 		frappe.delete_doc(
 			"Gateway Payment Request", request_name, ignore_permissions=True, delete_permanently=True

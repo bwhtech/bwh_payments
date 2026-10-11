@@ -3,7 +3,6 @@
 
 import frappe
 from frappe import _
-from frappe.integrations.utils import create_request_log
 from frappe.model.document import Document
 from frappe.utils.data import cstr, flt
 
@@ -171,12 +170,22 @@ class GatewayPaymentRequest(Document):
 		self.save(ignore_permissions=True)
 		return True
 
-	def get_remaining_refundable_amount(self) -> float:
+	def get_unrefunded_amount(self) -> float:
 		precision = get_minor_unit_exponent(self.currency_code)
 		return flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
 
+	def get_pending_refund_amount(self) -> float:
+		pending = frappe.get_all(
+			"Gateway Refund", filters={"payment_request": self.name, "status": "Pending"}, pluck="amount"
+		)
+		return sum(flt(amount) for amount in pending)
+
+	def get_remaining_refundable_amount(self) -> float:
+		precision = get_minor_unit_exponent(self.currency_code)
+		return flt(self.get_unrefunded_amount() - self.get_pending_refund_amount(), precision)
+
 	def resolve_refund_status(self) -> str:
-		if self.get_remaining_refundable_amount() < 10 ** -get_minor_unit_exponent(self.currency_code):
+		if self.get_unrefunded_amount() < 10 ** -get_minor_unit_exponent(self.currency_code):
 			return "Refunded"
 		return "Partially Refunded"
 
@@ -190,7 +199,15 @@ class GatewayPaymentRequest(Document):
 		)
 		self.reload()
 
-	def refund(self, amount: float | None = None, payment_entry: str | None = None):
+	def refund(self, amount: float | None = None, payment_entry: str | None = None) -> dict:
+		self.create_refund(amount, payment_entry=payment_entry)
+		self.reload()
+		return self.get_refund_summary()
+
+	def create_refund(
+		self, amount: float | None = None, reference: str | None = None, payment_entry: str | None = None
+	):
+		"""Refund `amount` (the whole remaining balance when None) and return the Gateway Refund."""
 		self.lock_row()
 
 		if self.status not in REFUNDABLE_STATUSES:
@@ -201,8 +218,10 @@ class GatewayPaymentRequest(Document):
 
 		if payment_entry:
 			payment_entry = get_original_payment_entry(payment_entry)
-		if payment_entry and payment_entry in self.get_refunded_payment_entries():
-			return self.get_refund_summary()
+			if payment_entry in self.get_refunded_payment_entries():
+				return None
+			if existing := self.get_refund_for_payment_entry(payment_entry):
+				return existing
 
 		precision = get_minor_unit_exponent(self.currency_code)
 		remaining = self.get_remaining_refundable_amount()
@@ -218,34 +237,42 @@ class GatewayPaymentRequest(Document):
 				)
 			)
 
-		# Not committed first: that would release the row lock.
-		request_log = create_request_log(
+		refund = frappe.get_doc(
 			{
-				"gateway_payment_request": self.name,
-				"order_ref": self.order_ref,
+				"doctype": "Gateway Refund",
+				"payment_request": self.name,
 				"amount": amount,
-				"currency": self.currency_code,
-			},
-			service_name=f"{self.gateway} Refund",
-			reference_doctype=self.doctype,
-			reference_docname=self.name,
-		)
+				"reference": reference,
+				"payment_entry": payment_entry,
+			}
+		).insert(ignore_permissions=True)
+		# Committed before the slow gateway call, which releases the row lock: from here the Pending
+		# refund holds its amount against any concurrent refund.
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 		try:
 			result = self.get_gateway_settings().refund_payment(self.order_ref, amount, self.currency_code)
-		except Exception:
-			request_log.db_set("status", "Failed", update_modified=False)
+		except Exception as error:
+			refund.mark_failed(str(error))
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit
 			raise
 
-		self.append_refund_id(RefundResult.model_validate(result or {}).refund_id)
-		self.refund_amount = flt(flt(self.refund_amount, precision) + amount, precision)
-		self.status = self.resolve_refund_status()
-		if payment_entry:
-			self.append_refunded_payment_entry(payment_entry)
-		self.save(ignore_permissions=True)
+		refund.apply_gateway_result(RefundResult.model_validate(result or {}))
+		return refund
 
-		request_log.db_set("status", "Completed", update_modified=False)
-		return self.get_refund_summary()
+	def get_refund_for_payment_entry(self, payment_entry: str):
+		name = frappe.db.get_value(
+			"Gateway Refund", {"payment_entry": payment_entry, "status": ["!=", "Failed"]}, "name"
+		)
+		return frappe.get_doc("Gateway Refund", name) if name else None
+
+	def add_processed_refund(self, refund):
+		self.lock_row()
+		precision = get_minor_unit_exponent(self.currency_code)
+		self.refund_amount = flt(flt(self.refund_amount, precision) + flt(refund.amount), precision)
+		self.append_refund_id(refund.refund_id)
+		self.status = self.resolve_refund_status()
+		self.save(ignore_permissions=True)
 
 	def get_refund_summary(self) -> dict:
 		return {"refund_amount": self.refund_amount, "status": self.status, "refund_id": self.refund_id}
@@ -258,12 +285,8 @@ class GatewayPaymentRequest(Document):
 		self.refund_id = ",".join(existing_ids)
 
 	def get_refunded_payment_entries(self) -> list[str]:
+		"""Payment Entries refunded before Gateway Refund kept the ledger."""
 		return [entry for entry in (self.refund_payment_entries or "").split(",") if entry]
-
-	def append_refunded_payment_entry(self, payment_entry: str):
-		entries = self.get_refunded_payment_entries()
-		entries.append(payment_entry)
-		self.refund_payment_entries = ",".join(entries)
 
 	def apply_webhook_status(self, status: str, event_id: str | None = None) -> bool:
 		self.lock_row()
