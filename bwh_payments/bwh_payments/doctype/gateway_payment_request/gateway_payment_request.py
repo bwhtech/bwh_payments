@@ -136,7 +136,6 @@ class GatewayPaymentRequest(Document):
 		self.status = status
 		self.save(ignore_permissions=True)
 
-	@frappe.whitelist()
 	def release_if_unpaid(self) -> bool:
 		self.sync_status()
 		if self.status != "Pending":
@@ -173,7 +172,6 @@ class GatewayPaymentRequest(Document):
 		)
 		self.reload()
 
-	@frappe.whitelist()
 	def refund(self, amount: float | None = None, payment_entry: str | None = None):
 		self.lock_row()
 

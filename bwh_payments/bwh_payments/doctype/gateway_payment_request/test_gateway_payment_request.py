@@ -9,6 +9,9 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
 from bwh_payments.api import create_payment
+from bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_request import (
+	GatewayPaymentRequest,
+)
 from bwh_payments.currency import to_minor_units
 from bwh_payments.services.stripe.base import StripeRefund
 from bwh_payments.services.stripe.stub import StubStripeClient
@@ -419,3 +422,10 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 	def test_gateway_payment_request_is_not_submittable(self):
 		self.assertFalse(frappe.get_meta("Gateway Payment Request").is_submittable)
+
+	def test_money_moving_methods_cannot_be_called_over_rest(self):
+		frappe.is_whitelisted(GatewayPaymentRequest.sync_status)
+
+		for method in (GatewayPaymentRequest.refund, GatewayPaymentRequest.release_if_unpaid):
+			with self.subTest(method=method.__name__), self.assertRaises(frappe.PermissionError):
+				frappe.is_whitelisted(method)
