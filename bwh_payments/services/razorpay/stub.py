@@ -114,7 +114,8 @@ def build_refund_event(
 	return json.dumps(
 		{
 			"entity": "event",
-			"event": f"refund.{status}",
+			# Razorpay announces a refund that is still pending as refund.created.
+			"event": "refund.created" if status == "pending" else f"refund.{status}",
 			"payload": {
 				"refund": {
 					"entity": {
