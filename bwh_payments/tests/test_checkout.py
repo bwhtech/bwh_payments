@@ -59,6 +59,17 @@ class TestReturnFromGateway(IntegrationTestCase):
 		payment_request.reload()
 		self.assertEqual(payment_request.status, "Paid")
 
+	def test_the_confirmed_status_is_kept_although_the_return_is_a_get_request(self):
+		payment_request = create_payment("Currency", "SAR", 100, "SAR", GATEWAY, redirect_to="/orders/1")
+		StubStripeClient.pay(payment_request.order_ref)
+		frappe.local.flags.commit = False
+		self.addCleanup(setattr, frappe.local.flags, "commit", False)
+
+		self.return_as_guest(payment_request.name)
+
+		# Frappe rolls back a GET request unless this flag asks it to commit (frappe.app.sync_database).
+		self.assertTrue(frappe.local.flags.commit)
+
 	def test_a_shopper_who_backed_out_still_lands_on_the_redirect_and_stays_pending(self):
 		payment_request = create_payment("Currency", "SAR", 100, "SAR", GATEWAY, redirect_to="/orders/1")
 

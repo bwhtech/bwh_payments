@@ -28,6 +28,8 @@ def return_from_gateway(request: str):
 		try:
 			with run_as_administrator():
 				payment_request.sync_status()
+			# Frappe rolls back GET requests; the gateway's answer must be kept.
+			frappe.local.flags.commit = True
 		except Exception:
 			# The shopper still goes on; the webhook settles the payment later.
 			frappe.db.rollback()
