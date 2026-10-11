@@ -36,16 +36,31 @@ class TestReturnFromGateway(IntegrationTestCase):
 		frappe.set_user("Administrator")
 
 	def return_as_guest(self, request_name: str):
+		frappe.set_user("Guest")
+		response = self.return_to_site(request_name)
+		frappe.set_user("Administrator")
+		return response
+
+	def return_to_site(self, request_name: str):
 		environ = EnvironBuilder(
 			method="GET", path="/api/method/bwh_payments.bwh_payments.checkout.return_from_gateway"
 		).get_environ()
 		frappe.local.request = Request(environ)
 		frappe.local.request_ip = "127.0.0.1"
 		frappe.local.response = frappe._dict()
-		frappe.set_user("Guest")
 		checkout.return_from_gateway(request_name)
-		frappe.set_user("Administrator")
 		return frappe.local.response
+
+	def test_a_signed_in_shopper_keeps_their_session(self):
+		payment_request = create_payment("Currency", "SAR", 100, "SAR", GATEWAY, redirect_to="/orders/1")
+		StubStripeClient.pay(payment_request.order_ref)
+		# The request saves this session back once it ends, so the shopper's sid and data must survive.
+		session = frappe.local.session
+		session.update({"sid": "shopper-sid", "data": frappe._dict(session_expiry="240:00:00")})
+
+		self.return_to_site(payment_request.name)
+
+		self.assertEqual((session.sid, session.data.session_expiry), ("shopper-sid", "240:00:00"))
 
 	def test_the_shopper_lands_on_the_redirect_after_the_payment_is_confirmed(self):
 		payment_request = create_payment(
