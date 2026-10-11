@@ -33,10 +33,21 @@ class PaymentGatewayProfile(Document):
 					frappe.bold(self.gateway_settings)
 				)
 			)
-		get_available_payment_modes.clear_cache()
+
+	def on_update(self):
+		clear_available_payment_modes()
 
 	def on_trash(self):
-		get_available_payment_modes.clear_cache()
+		clear_available_payment_modes()
+
+	def after_rename(self, old_name: str, new_name: str, merge: bool = False):
+		clear_available_payment_modes()
 
 	def get_controller(self) -> PaymentGatewayBase:
 		return frappe.get_single(self.gateway_settings)
+
+
+def clear_available_payment_modes():
+	# Cleared again after commit: a worker reading in between would cache the old rows.
+	get_available_payment_modes.clear_cache()
+	frappe.db.after_commit.add(get_available_payment_modes.clear_cache)

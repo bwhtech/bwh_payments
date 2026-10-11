@@ -2,14 +2,13 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 
 import frappe
-from frappe.utils.caching import site_cache
+from frappe.utils.caching import redis_cache
 
 LANGUAGE_SEGMENT = re.compile(r"^[a-z]{2}(-[A-Za-z]{2})?$")
 
 
-@site_cache(ttl=60 * 60)
+@redis_cache(ttl=60 * 60)
 def get_available_payment_modes() -> list[str]:
-	# site_cache is per worker; the TTL bounds how long others offer a just-disabled gateway.
 	return frappe.get_all("Payment Gateway Profile", filters={"enabled": 1}, pluck="name")
 
 
