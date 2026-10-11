@@ -7,13 +7,11 @@ description = "Payment gateway integrations for Frappe"
 requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]
-# The stripe SDK is deliberately not declared here: frappe/payments already pins stripe~=10.12.0 in the
-# same bench venv, and every API this app uses (checkout.sessions.create/retrieve, refunds.create,
-# Webhook.construct_event, StripeClient) exists in 10.x. Declaring a range would fight that pin.
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
     # stripe_gateway_settings imports this at module level, so every install of a
     # dependent app dies at import without it. StripeClient.v1 needs 12.5 or newer.
+    # frappe/payments pins stripe~=10.12, so the two apps cannot share a bench venv cleanly.
     "stripe>=12.5,<16",
     # Gateway results and service-client responses are pydantic models. Frappe pins the exact version.
     "pydantic>=2,<3",
