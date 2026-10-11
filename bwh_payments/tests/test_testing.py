@@ -9,7 +9,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
 from bwh_payments import testing
-from bwh_payments.api import create_payment, refund
+from bwh_payments.api import create_payment, refund, sync_refunds
 
 
 class TestConsumerTestHelpers(IntegrationTestCase):
@@ -65,3 +65,23 @@ class TestConsumerTestHelpers(IntegrationTestCase):
 
 		with self.assertRaises(frappe.ValidationError):
 			refund(payment_request.name, 40)
+
+	def test_a_pending_refund_settles_when_synced_after_the_gateway_reports_it(self):
+		payment_request = self.make_paid_payment()
+		testing.set_next_refund_status("Pending")
+		gateway_refund = refund(payment_request.name, 40)
+
+		testing.set_refund_status(gateway_refund.name, "Processed")
+		sync_refunds(payment_request.name)
+
+		gateway_refund.reload()
+		self.assertEqual(gateway_refund.status, "Processed")
+
+	def test_without_commits_keeps_a_refund_inside_the_test_transaction(self):
+		payment_request = self.make_paid_payment()
+
+		with testing.without_commits():
+			gateway_refund = refund(payment_request.name, 40)
+		frappe.db.rollback()
+
+		self.assertFalse(frappe.db.exists("Gateway Refund", gateway_refund.name))

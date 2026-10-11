@@ -1,9 +1,11 @@
 """Test helpers for apps that take payments through bwh_payments.
 
 They drive an in-memory gateway, so a consumer's tests exercise the real payment request, refund and
-webhook code without naming a provider or touching the network. Refunds and webhook logs commit, so
-call `remove_test_gateway()` in `tearDownClass` after the class rollback.
+webhook code without naming a provider or touching the network. Refunds and webhook logs commit:
+wrap the test class in `without_commits()`, or call `remove_test_gateway()` after the class rollback.
 """
+
+from contextlib import contextmanager
 
 import frappe
 from werkzeug.test import EnvironBuilder
@@ -18,6 +20,19 @@ TEST_GATEWAY = "Test Gateway"
 SETTINGS = "Razorpay Gateway Settings"
 WEBHOOK_SECRET = "bwh_payments_test_webhook_secret"
 REFUND_STATUSES = {"Pending": "pending", "Processed": "processed", "Failed": "failed"}
+
+
+@contextmanager
+def without_commits():
+	"""Turn commits into no-ops, so the test's own rollback also undoes refunds and webhook logs.
+
+	Leave it before the class rollback runs: inside it, rollback is a no-op too.
+	"""
+	frappe.db._disable_transaction_control += 1
+	try:
+		yield
+	finally:
+		frappe.db._disable_transaction_control -= 1
 
 
 def reset():
@@ -68,6 +83,13 @@ def pay(payment_request: str):
 def set_next_refund_status(status: str):
 	"""How the gateway answers the next refund: "Pending", "Processed" or "Failed" (refused)."""
 	StubRazorpayClient.next_refund_status = REFUND_STATUSES[status]
+
+
+def set_refund_status(refund: str, status: str):
+	"""The gateway now reports this refund as "Processed" or "Failed", for `api.sync_refunds` to read."""
+	StubRazorpayClient.set_refund_status(
+		frappe.db.get_value("Gateway Refund", refund, "refund_id"), REFUND_STATUSES[status]
+	)
 
 
 def send_refund_webhook(refund: str, status: str):
