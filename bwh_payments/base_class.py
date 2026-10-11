@@ -55,5 +55,9 @@ class PaymentGatewayBase(ABC):
 	def cancel_session(self, session_id: str) -> bool:
 		return False
 
+	def get_transaction_ref(self, session_id: str) -> str | None:
+		"""The gateway's id for the settled payment, or None when it cannot say."""
+		return None
+
 	def get_gateway_name(self) -> str:
 		return self.__class__.__name__

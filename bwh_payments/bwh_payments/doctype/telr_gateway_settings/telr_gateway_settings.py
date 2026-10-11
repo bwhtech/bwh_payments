@@ -114,11 +114,9 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 			return "Paid" if self.treat_authorised_as_paid else "Pending"
 		return TELR_STATUS_MAP.get(status_text, "Pending")
 
-	def get_transaction_reference(self, client: BaseTelrClient, session_id: str) -> str:
-		transaction = client.check_order(session_id).transaction
-		if not (transaction and transaction.ref):
-			frappe.throw(_("Telr has no settled transaction for this order; it cannot be refunded."))
-		return transaction.ref
+	def get_transaction_ref(self, session_id: str) -> str | None:
+		transaction = self.get_client().check_order(session_id).transaction
+		return transaction.ref if transaction and transaction.ref else None
 
 	def handle_webhook(self, payload: bytes, headers: dict) -> None:
 		# Telr webhooks are unsigned; status comes only from get_payment_status.
@@ -130,9 +128,12 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		if not remote_auth_key:
 			frappe.throw(_("Please set the Remote Auth Key in Telr Gateway Settings to issue refunds"))
 
-		client = self.get_client()
-		result = client.refund(
-			self.get_transaction_reference(client, session_id),
+		transaction_ref = self.get_transaction_ref(session_id)
+		if not transaction_ref:
+			frappe.throw(_("Telr has no settled transaction for this order; it cannot be refunded."))
+
+		result = self.get_client().refund(
+			transaction_ref,
 			format_telr_amount(amount, currency),
 			currency,
 			remote_auth_key,

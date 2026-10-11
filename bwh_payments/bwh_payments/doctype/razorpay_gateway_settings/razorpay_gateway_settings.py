@@ -31,6 +31,8 @@ RAZORPAY_AUTHORISED_STATUS = "authorized"
 RAZORPAY_CANCELLED_STATUS = "cancelled"
 RAZORPAY_CAPTURED_STATUS = "captured"
 RAZORPAY_PAID_EVENT = "payment_link.paid"
+# Payments taken before Payment Links (e.g. imported from frappe/payments) are keyed on the payment id.
+RAZORPAY_PAYMENT_ID_PREFIX = "pay_"
 RAZORPAY_ACCEPTED_REFUND_STATUSES = ("processed", "pending")
 
 # Title case: `dict(frappe.request.headers)` drops werkzeug's case-insensitivity.
@@ -177,10 +179,21 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 		return (link.status or "").strip().casefold() == RAZORPAY_CANCELLED_STATUS
 
+	def get_transaction_ref(self, session_id: str) -> str | None:
+		payments = self.get_client().get_payment_link(session_id).payments or []
+		for wanted in (RAZORPAY_CAPTURED_STATUS, RAZORPAY_AUTHORISED_STATUS):
+			for payment in payments:
+				if (payment.status or "").strip().casefold() == wanted:
+					return payment.payment_id
+		return None
+
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
 		currency = currency or self.currency
 		client = self.get_client()
-		payment_id = get_captured_payment_id(client.get_payment_link(session_id))
+		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
+			payment_id = session_id
+		else:
+			payment_id = get_captured_payment_id(client.get_payment_link(session_id))
 
 		refund = client.create_refund(payment_id, to_minor_units(amount, currency))
 		if refund.status not in RAZORPAY_ACCEPTED_REFUND_STATUSES:

@@ -125,6 +125,35 @@ class TestRazorpayGatewaySettings(RazorpayTestCase):
 		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 1)
 		frappe.clear_cache()
 
+	def test_a_paid_link_is_traced_to_its_captured_payment(self):
+		payment_request = make_razorpay_payment_request(100)
+		payment_id = StubRazorpayClient.pay(payment_request.order_ref)
+
+		payment_request.sync_status()
+
+		self.assertEqual(payment_request.gateway_transaction_ref, payment_id)
+
+	def test_a_payment_imported_from_before_payment_links_refunds_against_its_payment_id(self):
+		imported = frappe.get_doc(
+			{
+				"doctype": "Gateway Payment Request",
+				"gateway": RAZORPAY_GATEWAY,
+				"amount": 100,
+				"currency_code": "INR",
+				"ref_doctype": "Currency",
+				"ref_docname": "INR",
+				"status": "Paid",
+				"order_ref": "pay_imported_1",
+				"gateway_transaction_ref": "pay_imported_1",
+			}
+		).insert(ignore_permissions=True)
+
+		imported.refund(40)
+
+		self.assertEqual(
+			StubRazorpayClient.created_refunds[-1], {"payment_id": "pay_imported_1", "amount": 4000}
+		)
+
 	def test_create_session_charges_iso_minor_units_for_a_two_decimal_currency(self):
 		self.get_settings().create_session(1234.56, "INR", reference="GPR-0001")
 

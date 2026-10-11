@@ -77,6 +77,8 @@ class GatewayPaymentRequest(Document):
 	def before_save(self):
 		if not self.order_ref:
 			self.create_session()
+		elif not self.is_new() and self.has_value_changed("status") and self.status == "Paid":
+			self.gateway_transaction_ref = self.gateway_transaction_ref or self.fetch_transaction_ref()
 
 	def on_update(self):
 		# frappe/payments convention, so apps written for it settle orders unchanged.
@@ -106,6 +108,15 @@ class GatewayPaymentRequest(Document):
 		self.success_url = session.success_url
 		self.cancel_url = session.cancel_url
 		self.failure_url = session.failure_url
+
+	def fetch_transaction_ref(self) -> str | None:
+		try:
+			return self.get_gateway_settings().get_transaction_ref(self.order_ref)
+		except Exception:
+			# Only refunds raised outside this app need it, so a failed lookup must not block the payment.
+			frappe.clear_last_message()
+			frappe.log_error(title=_("Could not read the settled transaction for {0}").format(self.name))
+			return None
 
 	def get_customer_details(self) -> dict:
 		address = None

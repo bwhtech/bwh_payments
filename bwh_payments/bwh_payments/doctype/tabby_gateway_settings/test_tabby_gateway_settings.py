@@ -27,6 +27,9 @@ class TestTabbyGatewaySettings(IntegrationTestCase):
 			}
 		)
 
+	def test_the_payment_id_is_the_transaction(self):
+		self.assertEqual(self.settings.get_transaction_ref("tabby_payment_1"), "tabby_payment_1")
+
 	def test_create_session_keys_the_request_on_the_payment_id_not_the_checkout_id(self):
 		session = self.settings.create_session(12.345, "KWD", reference="GPR-0001")
 

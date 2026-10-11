@@ -485,6 +485,25 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 				with self.assertRaises(frappe.CannotChangeConstantError):
 					changed.save(ignore_permissions=True)
 
+	def test_a_paid_request_remembers_the_transaction_the_gateway_settled(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+
+		payment_request.sync_status()
+
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertEqual(payment_request.gateway_transaction_ref, f"pi_{payment_request.order_ref}")
+
+	def test_a_transaction_lookup_that_fails_does_not_stop_the_payment_settling(self):
+		payment_request = make_payment_request(100, "SAR")
+		settings_class = type(payment_request.get_gateway_settings())
+
+		with patch.object(settings_class, "get_transaction_ref", side_effect=frappe.ValidationError):
+			payment_request.apply_webhook_status("Paid", "evt_ref_down")
+
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertIsNone(payment_request.gateway_transaction_ref)
+
 	def test_money_moving_methods_cannot_be_called_over_rest(self):
 		frappe.is_whitelisted(GatewayPaymentRequest.sync_status)
 

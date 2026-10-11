@@ -17,6 +17,19 @@ class TestTelrGatewaySettings(IntegrationTestCase):
 		settings.treat_authorised_as_paid = treat_authorised_as_paid
 		return settings.get_payment_status(StubTelrClient.add_order(status_text))
 
+	def test_a_settled_order_is_traced_to_its_transaction(self):
+		order_ref = StubTelrClient.add_order("Paid")
+		transaction_ref = StubTelrClient.pay(order_ref)
+
+		self.assertEqual(
+			frappe.get_single("Telr Gateway Settings").get_transaction_ref(order_ref), transaction_ref
+		)
+
+	def test_an_order_without_a_transaction_has_no_reference(self):
+		order_ref = StubTelrClient.add_order("Pending")
+
+		self.assertIsNone(frappe.get_single("Telr Gateway Settings").get_transaction_ref(order_ref))
+
 	def test_an_authorised_order_stays_pending_until_the_store_says_otherwise(self):
 		self.assertEqual(self.get_payment_status("Authorised", 0), "Pending")
 

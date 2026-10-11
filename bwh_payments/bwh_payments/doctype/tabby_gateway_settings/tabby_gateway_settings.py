@@ -189,6 +189,10 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		if frappe.local.request_ip not in allowed_ips:
 			frappe.throw(_("Tabby webhook came from an address that is not allowed"))
 
+	def get_transaction_ref(self, session_id: str) -> str | None:
+		# Tabby's session id is already the payment id.
+		return session_id
+
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
 		currency = currency or self.currency
 		client = self.get_client()
