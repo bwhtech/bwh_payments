@@ -25,7 +25,8 @@ class TestImportFromFrappePayments(IntegrationTestCase):
 		frappe.db.set_single_value("Stripe Gateway Settings", {"public_key": "", "private_key": ""})
 
 		# Inserted raw: the frappe/payments controllers call the gateway to check credentials on save.
-		self.add_payment_gateway("Razorpay", "Razorpay Settings")
+		# frappe/payments creates its Razorpay gateway by name only, with no gateway_settings.
+		self.add_payment_gateway("Razorpay")
 		frappe.db.set_single_value("Razorpay Settings", "api_key", "rzp_test_legacy")
 		set_encrypted_password("Razorpay Settings", "Razorpay Settings", "legacy_key_secret", "api_secret")
 		set_encrypted_password(
@@ -36,7 +37,7 @@ class TestImportFromFrappePayments(IntegrationTestCase):
 		self.add_stripe_account("Second", "pk_test_second", "sk_test_second")
 		self.add_payment_gateway("PayPal", "PayPal Settings")
 
-	def add_payment_gateway(self, name: str, settings: str, controller: str | None = None):
+	def add_payment_gateway(self, name: str, settings: str | None = None, controller: str | None = None):
 		frappe.get_doc(
 			{
 				"doctype": "Payment Gateway",
@@ -96,6 +97,15 @@ class TestImportFromFrappePayments(IntegrationTestCase):
 		import_gateways()
 
 		self.assertEqual(self.get_profile("PayPal"), {"enabled": 0, "gateway_settings": None})
+
+	def test_a_profile_left_without_settings_gets_its_keys_on_the_next_run(self):
+		frappe.get_doc({"doctype": "Payment Gateway Profile", "name": "Razorpay", "enabled": 0}).insert()
+
+		self.assertIn("Razorpay", import_gateways())
+		self.assertEqual(
+			self.get_profile("Razorpay"), {"enabled": 1, "gateway_settings": "Razorpay Gateway Settings"}
+		)
+		self.assertEqual(frappe.db.get_single_value("Razorpay Gateway Settings", "key_id"), "rzp_test_legacy")
 
 	def test_running_the_import_again_changes_nothing(self):
 		first = import_gateways()

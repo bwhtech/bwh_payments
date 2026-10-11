@@ -18,21 +18,32 @@ def import_gateways() -> list[str]:
 	for gateway in frappe.get_all(
 		"Payment Gateway", fields=["name", "gateway_settings", "gateway_controller"], order_by="creation asc"
 	):
-		if frappe.db.exists("Payment Gateway Profile", gateway.name):
+		# A profile without settings is filled on a later run, once its credentials can be copied.
+		if frappe.db.get_value("Payment Gateway Profile", gateway.name, "gateway_settings"):
 			continue
 
-		settings = copy_settings(gateway.gateway_settings, gateway.gateway_controller)
-		frappe.get_doc(
-			{
-				"doctype": "Payment Gateway Profile",
-				"name": gateway.name,
-				"gateway_settings": settings,
-				"enabled": 1 if settings else 0,
-			}
-		).insert(ignore_permissions=True)
-		imported.append(gateway.name)
+		# frappe/payments leaves gateway_settings empty on gateways it names itself, such as Razorpay.
+		source_doctype = gateway.gateway_settings or f"{gateway.name} Settings"
+		settings = copy_settings(source_doctype, gateway.gateway_controller)
+		if save_profile(gateway.name, settings):
+			imported.append(gateway.name)
 
 	return imported
+
+
+def save_profile(name: str, settings: str | None) -> bool:
+	"""Create the profile, or give an existing one its settings. Return True if anything changed."""
+	if not frappe.db.exists("Payment Gateway Profile", name):
+		profile = frappe.new_doc("Payment Gateway Profile")
+		profile.name = name
+	elif settings:
+		profile = frappe.get_doc("Payment Gateway Profile", name)
+	else:
+		return False
+
+	profile.update({"gateway_settings": settings, "enabled": 1 if settings else 0})
+	profile.save(ignore_permissions=True)
+	return True
 
 
 def copy_settings(source_doctype: str | None, source_name: str | None) -> str | None:
