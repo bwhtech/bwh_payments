@@ -52,7 +52,13 @@ class GatewayPaymentRequest(Document):
 	# end: auto-generated types
 
 	def validate(self):
+		self.validate_new_checkout_is_pending()
 		self.validate_amount_precision()
+
+	def validate_new_checkout_is_pending(self):
+		# A request without order_ref opens a real checkout, so it cannot already be settled.
+		if self.is_new() and not self.order_ref and self.status != "Pending":
+			frappe.throw(_("A new checkout must start as Pending"))
 
 	def validate_amount_precision(self):
 		"""Without `use_number_format_from_currency`, a default site rounds KWD to 2 decimals."""
@@ -74,7 +80,8 @@ class GatewayPaymentRequest(Document):
 
 	def on_update(self):
 		# frappe/payments convention, so apps written for it settle orders unchanged.
-		if self.has_value_changed("status") and self.status == "Paid":
+		# An insert that is already Paid is an import of a payment settled elsewhere.
+		if not self.flags.in_insert and self.has_value_changed("status") and self.status == "Paid":
 			frappe.get_doc(self.ref_doctype, self.ref_docname).run_method(
 				"on_payment_authorized", "Completed"
 			)

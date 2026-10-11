@@ -423,6 +423,68 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 	def test_gateway_payment_request_is_not_submittable(self):
 		self.assertFalse(frappe.get_meta("Gateway Payment Request").is_submittable)
 
+	def test_a_new_checkout_cannot_start_out_already_paid(self):
+		with (
+			patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized,
+			self.assertRaises(frappe.ValidationError),
+		):
+			frappe.get_doc(
+				{
+					"doctype": "Gateway Payment Request",
+					"gateway": GATEWAY,
+					"amount": 100,
+					"currency_code": "SAR",
+					"ref_doctype": "Currency",
+					"ref_docname": "SAR",
+					"status": "Paid",
+				}
+			).insert(ignore_permissions=True)
+
+		on_payment_authorized.assert_not_called()
+		self.assertEqual(StubStripeClient.created_sessions, [])
+
+	def test_importing_a_settled_payment_does_not_settle_the_document_again(self):
+		with patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized:
+			imported = frappe.get_doc(
+				{
+					"doctype": "Gateway Payment Request",
+					"gateway": GATEWAY,
+					"amount": 100,
+					"currency_code": "SAR",
+					"ref_doctype": "Currency",
+					"ref_docname": "SAR",
+					"status": "Paid",
+					"order_ref": "cs_imported_1",
+				}
+			).insert(ignore_permissions=True)
+
+		on_payment_authorized.assert_not_called()
+		self.assertEqual(imported.status, "Paid")
+		self.assertEqual(StubStripeClient.created_sessions, [])
+
+	def test_what_the_shopper_was_charged_cannot_change_after_checkout_opens(self):
+		payment_request = make_payment_request(100, "SAR")
+		frappe.get_doc(
+			{
+				"doctype": "Payment Gateway Profile",
+				"name": "Another Gateway",
+				"gateway_settings": "Stripe Gateway Settings",
+				"enabled": 1,
+			}
+		).insert(ignore_permissions=True)
+
+		for field, value in (
+			("amount", 1),
+			("currency_code", "USD"),
+			("gateway", "Another Gateway"),
+			("order_ref", "cs_swapped"),
+		):
+			with self.subTest(field=field):
+				changed = frappe.get_doc("Gateway Payment Request", payment_request.name)
+				changed.set(field, value)
+				with self.assertRaises(frappe.CannotChangeConstantError):
+					changed.save(ignore_permissions=True)
+
 	def test_money_moving_methods_cannot_be_called_over_rest(self):
 		frappe.is_whitelisted(GatewayPaymentRequest.sync_status)
 

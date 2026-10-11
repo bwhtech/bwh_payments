@@ -46,7 +46,8 @@
    "in_list_view": 1,
    "label": "Gateway",
    "options": "Payment Gateway Profile",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "default": "Pending",
@@ -54,7 +55,8 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Pending\nPaid\nNot Paid\nCancelled\nExpired\nPartially Refunded\nRefunded"
+   "options": "Pending\nPaid\nNot Paid\nCancelled\nExpired\nPartially Refunded\nRefunded",
+   "read_only": 1
   },
   {
    "fieldname": "column_break_tvtq",
@@ -68,6 +70,7 @@
    "label": "Order Reference",
    "read_only": 1,
    "search_index": 1,
+   "set_only_once": 1,
    "unique": 1
   },
   {
@@ -128,7 +131,8 @@
    "in_list_view": 1,
    "label": "Currency",
    "options": "Currency",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "fieldname": "customer_ref",
@@ -158,7 +162,8 @@
    "fieldtype": "Currency",
    "label": "Amount",
    "options": "currency_code",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "description": "Optional bridge to the ERPNext Payment Request when the flow is driven from Desk.",
