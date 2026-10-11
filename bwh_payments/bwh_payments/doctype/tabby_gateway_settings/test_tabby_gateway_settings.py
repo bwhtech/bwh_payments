@@ -9,6 +9,9 @@ from frappe.tests import IntegrationTestCase
 from bwh_payments.services.tabby.stub import StubTabbyClient
 
 WEBHOOK_TOKEN = "tabby_webhook_token"
+RETURN_URL = (
+	"https://shop.test/api/method/bwh_payments.bwh_payments.checkout.return_from_gateway?request=GPR-1"
+)
 
 
 class TestTabbyGatewaySettings(IntegrationTestCase):
@@ -26,6 +29,14 @@ class TestTabbyGatewaySettings(IntegrationTestCase):
 				"failure_url": "https://shop.test/en/cart/checkout",
 			}
 		)
+
+	def test_tabby_returns_every_outcome_to_the_given_return_url(self):
+		self.settings.update({"success_url": "", "cancelled_url": "", "failure_url": ""})
+
+		self.settings.create_session(100, "SAR", reference="GPR-1", return_url=RETURN_URL)
+
+		merchant_urls = StubTabbyClient.created_checkouts[-1]["merchant_urls"]
+		self.assertEqual(set(merchant_urls.values()), {RETURN_URL})
 
 	def test_the_payment_id_is_the_transaction(self):
 		self.assertEqual(self.settings.get_transaction_ref("tabby_payment_1"), "tabby_payment_1")

@@ -7,6 +7,8 @@ from frappe.model.document import Document
 from frappe.utils.data import cstr, flt
 
 from bwh_payments.base_class import CheckoutSession, RefundResult
+from bwh_payments.bwh_payments.checkout import get_return_url
+from bwh_payments.bwh_payments.utils import is_local_path
 from bwh_payments.currency import get_minor_unit_exponent
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
@@ -52,7 +54,12 @@ class GatewayPaymentRequest(Document):
 
 	def validate(self):
 		self.validate_new_checkout_is_pending()
+		self.validate_redirect_to()
 		self.validate_amount_precision()
+
+	def validate_redirect_to(self):
+		if self.redirect_to and not is_local_path(self.redirect_to):
+			frappe.throw(_("Redirect To must be a path on this site, such as /orders/1"))
 
 	def validate_new_checkout_is_pending(self):
 		# A request without order_ref opens a real checkout, so it cannot already be settled.
@@ -94,12 +101,15 @@ class GatewayPaymentRequest(Document):
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
+		# Passed only when set, so gateways written before return_url keep working.
+		return_url = {"return_url": get_return_url(self.name)} if self.redirect_to else {}
 		session = CheckoutSession.model_validate(
 			self.get_gateway_settings().create_session(
 				flt(self.amount),
 				self.currency_code,
 				reference=self.name,
 				customer=self.get_customer_details(),
+				**return_url,
 			)
 		)
 		self.order_ref = session.session_id

@@ -78,16 +78,20 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		currency: str,
 		reference: str | None = None,
 		customer: dict | None = None,
+		return_url: str | None = None,
 	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
 		validate_tabby_currency(currency)
 
-		merchant_urls = {
-			"success": self.build_return_url(self.success_url, _("Success URL"), reference),
-			"cancel": self.build_return_url(self.cancelled_url, _("Cancelled URL"), reference),
-			"failure": self.build_return_url(self.failure_url, _("Failure URL"), reference),
-		}
+		if return_url:
+			merchant_urls = dict.fromkeys(("success", "cancel", "failure"), return_url)
+		else:
+			merchant_urls = {
+				"success": self.build_return_url(self.success_url, _("Success URL"), reference),
+				"cancel": self.build_return_url(self.cancelled_url, _("Cancelled URL"), reference),
+				"failure": self.build_return_url(self.failure_url, _("Failure URL"), reference),
+			}
 		payload = {
 			"payment": {
 				"amount": format_tabby_amount(amount, currency),

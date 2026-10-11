@@ -55,6 +55,7 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		currency: str,
 		reference: str | None = None,
 		customer: dict | None = None,
+		return_url: str | None = None,
 	) -> CheckoutSession:
 		validate_transaction_currency(currency)
 		session = self.get_client().create_checkout_session(
@@ -72,8 +73,8 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 						"quantity": 1,
 					}
 				],
-				"success_url": self.build_success_url(),
-				"cancel_url": self.failure_url,
+				"success_url": return_url or self.build_success_url(),
+				"cancel_url": return_url or self.failure_url,
 			}
 		)
 		return CheckoutSession(

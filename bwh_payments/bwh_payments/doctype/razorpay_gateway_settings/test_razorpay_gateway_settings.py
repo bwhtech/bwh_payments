@@ -11,6 +11,9 @@ from bwh_payments.services.razorpay.stub import StubRazorpayClient, build_paymen
 RAZORPAY_GATEWAY = "Razorpay"
 RAZORPAY_WEBHOOK_SECRET = "rzp_whsec_test_secret"
 SUCCESS_URL = "https://shop.test/en/account/orders/confirmation"
+RETURN_URL = (
+	"https://shop.test/api/method/bwh_payments.bwh_payments.checkout.return_from_gateway?request=GPR-1"
+)
 
 IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Address",
@@ -175,6 +178,15 @@ class TestRazorpayGatewaySettings(RazorpayTestCase):
 
 		self.assertEqual(result.status, "processed")
 		self.assertEqual(result.refund_id, refund.refund_id)
+
+	def test_razorpay_calls_back_to_the_given_return_url(self):
+		settings = self.get_settings()
+		settings.success_url = ""
+
+		session = settings.create_session(100, "INR", reference="GPR-1", return_url=RETURN_URL)
+
+		self.assertEqual(StubRazorpayClient.created_links[-1]["callback_url"], RETURN_URL)
+		self.assertEqual((session.cancel_url, session.failure_url), (RETURN_URL, RETURN_URL))
 
 	def test_create_session_charges_iso_minor_units_for_a_two_decimal_currency(self):
 		self.get_settings().create_session(1234.56, "INR", reference="GPR-0001")

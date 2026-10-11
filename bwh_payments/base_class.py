@@ -52,7 +52,9 @@ class PaymentGatewayBase(ABC):
 		currency: str,
 		reference: str | None = None,
 		customer: dict | None = None,
-	) -> CheckoutSession: ...
+		return_url: str | None = None,
+	) -> CheckoutSession:
+		"""With `return_url`, every way back from the checkout (paid, failed, cancelled) goes there."""
 
 	@abstractmethod
 	def get_payment_status(self, session_id: str) -> str:

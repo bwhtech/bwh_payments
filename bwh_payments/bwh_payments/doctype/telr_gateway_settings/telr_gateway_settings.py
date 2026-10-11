@@ -70,15 +70,19 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		currency: str,
 		reference: str | None = None,
 		customer: dict | None = None,
+		return_url: str | None = None,
 	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
 
-		return_urls = {
-			"authorised": self.build_return_url(self.authorised_url, reference),
-			"declined": get_localised_url(self.declined_url),
-			"cancelled": get_localised_url(self.cancelled_url),
-		}
+		if return_url:
+			return_urls = dict.fromkeys(("authorised", "declined", "cancelled"), return_url)
+		else:
+			return_urls = {
+				"authorised": self.build_return_url(self.authorised_url, reference),
+				"declined": get_localised_url(self.declined_url),
+				"cancelled": get_localised_url(self.cancelled_url),
+			}
 		order = self.get_client().create_order(
 			{
 				"cartid": reference,

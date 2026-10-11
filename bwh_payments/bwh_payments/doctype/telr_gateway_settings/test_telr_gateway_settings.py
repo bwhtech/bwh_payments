@@ -7,6 +7,10 @@ from frappe.tests import IntegrationTestCase
 from bwh_payments.services.telr.base import TelrOrder
 from bwh_payments.services.telr.stub import StubTelrClient
 
+RETURN_URL = (
+	"https://shop.test/api/method/bwh_payments.bwh_payments.checkout.return_from_gateway?request=GPR-1"
+)
+
 
 class TestTelrGatewaySettings(IntegrationTestCase):
 	def setUp(self):
@@ -29,6 +33,23 @@ class TestTelrGatewaySettings(IntegrationTestCase):
 		order_ref = StubTelrClient.add_order("Pending")
 
 		self.assertIsNone(frappe.get_single("Telr Gateway Settings").get_transaction_ref(order_ref))
+
+	def test_telr_returns_every_outcome_to_the_given_return_url(self):
+		settings = frappe.get_single("Telr Gateway Settings")
+		settings.update(
+			{
+				"store_id": "1",
+				"currency": "AED",
+				"authorised_url": "",
+				"declined_url": "",
+				"cancelled_url": "",
+			}
+		)
+
+		settings.create_session(100, "AED", reference="GPR-1", return_url=RETURN_URL)
+
+		returns = StubTelrClient.created_orders[-1]["return"]
+		self.assertEqual(set(returns.values()), {RETURN_URL})
 
 	def test_an_authorised_order_stays_pending_until_the_store_says_otherwise(self):
 		self.assertEqual(self.get_payment_status("Authorised", 0), "Pending")

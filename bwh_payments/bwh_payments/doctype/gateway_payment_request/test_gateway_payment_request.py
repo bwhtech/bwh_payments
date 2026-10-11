@@ -18,6 +18,9 @@ from bwh_payments.services.stripe.stub import StubStripeClient
 
 GATEWAY = "Stripe Test Gateway"
 WEBHOOK_SECRET = "whsec_test_secret"
+RETURN_URL = (
+	"https://shop.test/api/method/bwh_payments.bwh_payments.checkout.return_from_gateway?request=GPR-1"
+)
 
 IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Address",
@@ -514,6 +517,39 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertEqual(payment_request.status, "Paid")
 		self.assertIsNone(payment_request.gateway_transaction_ref)
+
+	def test_stripe_sends_the_shopper_back_to_the_given_return_url_either_way(self):
+		settings = frappe.get_single("Stripe Gateway Settings")
+		settings.success_url = ""
+
+		settings.create_session(100, "SAR", reference="GPR-1", return_url=RETURN_URL)
+
+		created = StubStripeClient.created_sessions[-1]
+		self.assertEqual((created["success_url"], created["cancel_url"]), (RETURN_URL, RETURN_URL))
+
+	def test_a_payment_with_a_redirect_comes_back_through_the_return_endpoint(self):
+		payment_request = create_payment(
+			"Currency", "SAR", 100, "SAR", GATEWAY, redirect_to="/orders/1?token=x"
+		)
+
+		self.assertEqual(payment_request.redirect_to, "/orders/1?token=x")
+		self.assertIn(
+			f"checkout.return_from_gateway?request={payment_request.name}",
+			StubStripeClient.created_sessions[-1]["success_url"],
+		)
+
+	def test_a_redirect_must_stay_on_this_site(self):
+		for redirect_to in (
+			"https://evil.test/x",
+			"//evil.test/x",
+			"/\\evil.test/x",
+			"javascript:alert(1)",
+			"orders/1",
+		):
+			with self.subTest(redirect_to=redirect_to), self.assertRaises(frappe.ValidationError):
+				create_payment("Currency", "SAR", 100, "SAR", GATEWAY, redirect_to=redirect_to)
+
+		self.assertEqual(StubStripeClient.created_sessions, [])
 
 	def test_money_moving_methods_cannot_be_called_over_rest(self):
 		frappe.is_whitelisted(GatewayPaymentRequest.sync_status)

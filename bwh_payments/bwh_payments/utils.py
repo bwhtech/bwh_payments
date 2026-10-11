@@ -1,4 +1,5 @@
 import re
+from contextlib import contextmanager
 from urllib.parse import urlsplit, urlunsplit
 
 import frappe
@@ -34,3 +35,22 @@ def get_localised_url(url: str) -> str:
 
 	segments[1] = language
 	return urlunsplit((parts.scheme, parts.netloc, "/".join(segments), parts.query, parts.fragment))
+
+
+@contextmanager
+def run_as_administrator():
+	"""Settling an order downstream needs a real user. Restored after, so a worker does not stay Administrator."""
+	session_user = frappe.session.user
+	try:
+		frappe.set_user("Administrator")
+		yield
+	finally:
+		frappe.set_user(session_user)
+
+
+def is_local_path(url: str | None) -> bool:
+	"""A path on this site. Browsers read `//host` and `/\\host` as another site."""
+	if not url or not url.startswith("/") or url.startswith(("//", "/\\")):
+		return False
+	parts = urlsplit(url)
+	return not (parts.scheme or parts.netloc)

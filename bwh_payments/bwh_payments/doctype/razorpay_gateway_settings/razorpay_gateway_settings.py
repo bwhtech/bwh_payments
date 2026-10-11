@@ -78,6 +78,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		currency: str,
 		reference: str | None = None,
 		customer: dict | None = None,
+		return_url: str | None = None,
 	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
@@ -88,7 +89,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 			"currency": currency.upper(),
 			"reference_id": reference,
 			"description": _("Online order payment"),
-			"callback_url": self.build_success_url(reference),
+			"callback_url": return_url or self.build_success_url(reference),
 			"callback_method": "get",
 			# Explicit, so the account's billable SMS/email defaults do not apply.
 			"notify": {"sms": notify, "email": notify},
@@ -104,8 +105,8 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 			session_id=link.id,
 			redirect_url=link.short_url,
 			success_url=payload["callback_url"],
-			cancel_url=get_localised_url(self.cancelled_url),
-			failure_url=get_localised_url(self.failure_url),
+			cancel_url=return_url or get_localised_url(self.cancelled_url),
+			failure_url=return_url or get_localised_url(self.failure_url),
 		)
 
 	def build_success_url(self, reference: str | None) -> str:

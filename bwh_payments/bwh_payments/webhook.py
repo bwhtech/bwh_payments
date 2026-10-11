@@ -4,6 +4,7 @@ from frappe.integrations.utils import create_request_log
 from frappe.rate_limiter import rate_limit
 
 from bwh_payments.base_class import WebhookEvent
+from bwh_payments.bwh_payments.utils import run_as_administrator
 
 WEBHOOK_ACCEPTED = {"status": "ok"}
 WEBHOOK_SAVEPOINT = "bwh_payments_webhook"
@@ -131,16 +132,11 @@ def retry_webhook(integration_request: str) -> None:
 
 
 def apply_event_as_administrator(payment_request, event: WebhookEvent):
-	# Downstream order creation needs a real user. Restore after, so the worker does not stay Administrator.
-	session_user = frappe.session.user
-	try:
-		frappe.set_user("Administrator")
+	with run_as_administrator():
 		if event.refund_id:
 			apply_refund_event(payment_request, event)
 		else:
 			payment_request.apply_webhook_status(event.status, event.event_id)
-	finally:
-		frappe.set_user(session_user)
 
 
 def apply_refund_event(payment_request, event: WebhookEvent):

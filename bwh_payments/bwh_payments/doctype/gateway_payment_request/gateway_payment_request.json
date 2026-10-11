@@ -11,6 +11,7 @@
   "order_ref",
   "order_url",
   "urls_section",
+  "redirect_to",
   "success_url",
   "column_break_meyd",
   "cancel_url",
@@ -83,6 +84,14 @@
    "fieldname": "urls_section",
    "fieldtype": "Section Break",
    "label": "URLs"
+  },
+  {
+   "description": "Path on this site the shopper is sent to after the gateway, once the payment status is synced",
+   "fieldname": "redirect_to",
+   "fieldtype": "Data",
+   "label": "Redirect To",
+   "read_only": 1,
+   "set_only_once": 1
   },
   {
    "fieldname": "success_url",
