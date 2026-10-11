@@ -51,6 +51,7 @@ class PaymentGatewayProfile(Document):
 
 
 def clear_available_payment_modes():
-	# Cleared again after commit: a worker reading in between would cache the old rows.
+	# Cleared again once the transaction ends: a read in between caches rows that may not last.
 	get_available_payment_modes.clear_cache()
 	frappe.db.after_commit.add(get_available_payment_modes.clear_cache)
+	frappe.db.after_rollback.add(get_available_payment_modes.clear_cache)

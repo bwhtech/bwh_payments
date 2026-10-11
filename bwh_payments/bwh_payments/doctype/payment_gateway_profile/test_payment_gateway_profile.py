@@ -46,3 +46,11 @@ class TestPaymentGatewayProfile(IntegrationTestCase):
 
 		cache_key = f"{get_available_payment_modes.__module__}.get_available_payment_modes"
 		self.assertTrue(frappe.cache.get_keys(cache_key))
+
+	def test_a_profile_whose_insert_is_rolled_back_is_not_offered(self):
+		make_profile("Profile Cache Rolled Back")
+		self.assertIn("Profile Cache Rolled Back", get_available_payment_modes())
+
+		frappe.db.rollback()
+
+		self.assertNotIn("Profile Cache Rolled Back", get_available_payment_modes())
