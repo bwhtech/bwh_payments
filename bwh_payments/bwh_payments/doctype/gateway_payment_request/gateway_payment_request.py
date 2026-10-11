@@ -272,9 +272,12 @@ class GatewayPaymentRequest(Document):
 
 	@frappe.whitelist()
 	def sync_refunds(self):
-		"""Ask the gateway about every Pending refund, for when a refund webhook never arrived."""
 		# Not check_permission: it is skipped when an earlier save set flags.ignore_permissions.
 		frappe.has_permission(self.doctype, "write", self, throw=True)
+		self.update_pending_refunds()
+
+	def update_pending_refunds(self):
+		"""Ask the gateway about every Pending refund, for when a refund webhook never arrived."""
 		settings = self.get_gateway_settings()
 		for name in frappe.get_all(
 			"Gateway Refund",

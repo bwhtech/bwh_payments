@@ -1,13 +1,26 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # See license.txt
 
-import frappe
-from frappe.tests import IntegrationTestCase
+from unittest.mock import patch
 
-from bwh_payments.api import get_gateway_options, validate_currency
+import frappe
+from frappe.geo.doctype.currency.currency import Currency
+from frappe.tests import IntegrationTestCase
+from frappe.utils.data import flt
+
+from bwh_payments.api import (
+	get_gateway_options,
+	record_external_payment,
+	record_external_refund,
+	refund,
+	sync_refunds,
+	validate_currency,
+)
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RAZORPAY_GATEWAY,
+	RazorpayTestCase,
 	configure_razorpay_gateway,
+	make_razorpay_payment_request,
 	remove_razorpay_gateway,
 )
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
@@ -67,3 +80,65 @@ class TestGatewayOptions(IntegrationTestCase):
 	def test_validate_currency_refuses_a_currency_the_site_does_not_have(self):
 		with self.assertRaises(frappe.ValidationError):
 			validate_currency(RAZORPAY_GATEWAY, "XYZ")
+
+
+class TestRefundsAndImports(RazorpayTestCase):
+	def import_paid_payment(self, order_ref: str = "pay_legacy_1"):
+		return record_external_payment(
+			"Currency", "INR", 100, "INR", RAZORPAY_GATEWAY, "Paid", order_ref, transaction_ref=order_ref
+		)
+
+	def test_refund_and_sync_work_by_request_name(self):
+		payment_request = make_razorpay_payment_request(100)
+		StubRazorpayClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		StubRazorpayClient.next_refund_status = "pending"
+
+		gateway_refund = refund(payment_request.name, 40, reference="MY-REFUND-1")
+		StubRazorpayClient.set_refund_status(gateway_refund.refund_id, "processed")
+		sync_refunds(payment_request.name)
+
+		gateway_refund.reload()
+		self.assertEqual((gateway_refund.status, gateway_refund.reference), ("Processed", "MY-REFUND-1"))
+
+	def test_an_imported_payment_opens_no_checkout_and_settles_nothing(self):
+		with patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized:
+			payment_request = self.import_paid_payment()
+
+		on_payment_authorized.assert_not_called()
+		self.assertEqual(StubRazorpayClient.created_links, [])
+		self.assertEqual(
+			(payment_request.status, payment_request.order_ref, payment_request.gateway_transaction_ref),
+			("Paid", "pay_legacy_1", "pay_legacy_1"),
+		)
+
+	def test_importing_the_same_payment_twice_keeps_one_record(self):
+		first = self.import_paid_payment("pay_legacy_twice")
+		second = self.import_paid_payment("pay_legacy_twice")
+
+		self.assertEqual(first.name, second.name)
+		self.assertEqual(frappe.db.count("Gateway Payment Request", {"order_ref": "pay_legacy_twice"}), 1)
+
+	def test_an_imported_refund_counts_against_the_payment_without_telling_the_document(self):
+		payment_request = self.import_paid_payment("pay_legacy_refunded")
+
+		with patch.object(Currency, "on_refund_update", create=True) as on_refund_update:
+			record_external_refund(
+				payment_request.name, "rfnd_legacy_1", "Processed", 30, reference="OLD-REF-1"
+			)
+			record_external_refund(
+				payment_request.name, "rfnd_legacy_1", "Processed", 30, reference="OLD-REF-1"
+			)
+
+		on_refund_update.assert_not_called()
+		payment_request.reload()
+		self.assertEqual(flt(payment_request.refund_amount), 30)
+		self.assertEqual(payment_request.status, "Partially Refunded")
+		self.assertEqual(payment_request.get_remaining_refundable_amount(), 70)
+
+	def test_an_imported_razorpay_payment_can_be_refunded_against_its_payment_id(self):
+		payment_request = self.import_paid_payment("pay_legacy_refundable")
+
+		refund(payment_request.name, 70)
+
+		self.assertEqual(StubRazorpayClient.created_refunds[-1]["payment_id"], "pay_legacy_refundable")

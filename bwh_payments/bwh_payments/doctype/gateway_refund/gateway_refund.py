@@ -51,6 +51,9 @@ class GatewayRefund(Document):
 		if self.status == "Processed":
 			payment_request.add_processed_refund(self)
 
+		# An import records history the referenced document already reflects.
+		if self.flags.imported:
+			return
 		frappe.get_doc(payment_request.ref_doctype, payment_request.ref_docname).run_method(
 			"on_refund_update", self
 		)
