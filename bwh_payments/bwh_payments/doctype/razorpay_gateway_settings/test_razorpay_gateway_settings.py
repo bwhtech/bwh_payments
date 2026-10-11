@@ -163,6 +163,19 @@ class TestRazorpayGatewaySettings(RazorpayTestCase):
 			StubRazorpayClient.created_refunds[-1], {"payment_id": "pay_imported_1", "amount": 4000}
 		)
 
+	def test_a_refund_razorpay_has_processed_reads_as_processed(self):
+		payment_request = make_razorpay_payment_request(100)
+		StubRazorpayClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		StubRazorpayClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(40)
+		StubRazorpayClient.set_refund_status(refund.refund_id, "processed")
+
+		result = self.get_settings().get_refund_status(payment_request.order_ref, refund.refund_id)
+
+		self.assertEqual(result.status, "processed")
+		self.assertEqual(result.refund_id, refund.refund_id)
+
 	def test_create_session_charges_iso_minor_units_for_a_two_decimal_currency(self):
 		self.get_settings().create_session(1234.56, "INR", reference="GPR-0001")
 

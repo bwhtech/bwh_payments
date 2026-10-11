@@ -31,6 +31,9 @@ class LiveRazorpayClient(BaseRazorpayClient):
 	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
 		return RazorpayRefund.model_validate(self.post(f"/payments/{payment_id}/refund", {"amount": amount}))
 
+	def get_refund(self, refund_id: str) -> RazorpayRefund:
+		return RazorpayRefund.model_validate(self.get(f"/refunds/{refund_id}"))
+
 	def post(self, endpoint: str, payload: dict) -> dict:
 		url = f"{RAZORPAY_BASE_URL}{endpoint}"
 		try:

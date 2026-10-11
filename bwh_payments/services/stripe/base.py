@@ -35,3 +35,6 @@ class BaseStripeClient(ABC):
 
 	@abstractmethod
 	def create_refund(self, params: dict) -> StripeRefund: ...
+
+	@abstractmethod
+	def retrieve_refund(self, refund_id: str) -> StripeRefund: ...

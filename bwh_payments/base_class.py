@@ -55,6 +55,10 @@ class PaymentGatewayBase(ABC):
 	def cancel_session(self, session_id: str) -> bool:
 		return False
 
+	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult | None:
+		"""What the gateway now says about a refund, or None when it cannot be asked."""
+		return None
+
 	def get_transaction_ref(self, session_id: str) -> str | None:
 		"""The gateway's id for the settled payment, or None when it cannot say."""
 		return None

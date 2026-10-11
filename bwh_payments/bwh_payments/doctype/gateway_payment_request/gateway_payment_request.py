@@ -260,6 +260,22 @@ class GatewayPaymentRequest(Document):
 		refund.apply_gateway_result(RefundResult.model_validate(result or {}))
 		return refund
 
+	@frappe.whitelist()
+	def sync_refunds(self):
+		"""Ask the gateway about every Pending refund, for when a refund webhook never arrived."""
+		# Not check_permission: it is skipped when an earlier save set flags.ignore_permissions.
+		frappe.has_permission(self.doctype, "write", self, throw=True)
+		settings = self.get_gateway_settings()
+		for name in frappe.get_all(
+			"Gateway Refund",
+			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "set"]},
+			pluck="name",
+		):
+			refund = frappe.get_doc("Gateway Refund", name)
+			result = settings.get_refund_status(self.order_ref, refund.refund_id)
+			if result:
+				refund.apply_gateway_status(RefundResult.model_validate(result).status)
+
 	def get_refund_for_payment_entry(self, payment_entry: str):
 		name = frappe.db.get_value(
 			"Gateway Refund", {"payment_entry": payment_entry, "status": ["!=", "Failed"]}, "name"

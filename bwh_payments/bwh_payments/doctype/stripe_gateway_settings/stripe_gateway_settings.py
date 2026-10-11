@@ -128,6 +128,10 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 			event_id=event["id"],
 		)
 
+	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult:
+		refund = self.get_client().retrieve_refund(refund_id)
+		return RefundResult(refund_id=refund.id, status=refund.status)
+
 	def get_transaction_ref(self, session_id: str) -> str | None:
 		return self.get_client().retrieve_checkout_session(session_id).payment_intent
 

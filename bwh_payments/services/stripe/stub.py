@@ -16,6 +16,7 @@ class StubStripeClient(BaseStripeClient):
 	sessions: ClassVar[dict[str, StripeCheckoutSession]] = {}
 	created_sessions: ClassVar[list[dict]] = []
 	created_refunds: ClassVar[list[dict]] = []
+	refunds: ClassVar[dict[str, StripeRefund]] = {}
 	next_refund_status: ClassVar[str] = "succeeded"
 
 	@classmethod
@@ -23,7 +24,12 @@ class StubStripeClient(BaseStripeClient):
 		cls.sessions = {}
 		cls.created_sessions = []
 		cls.created_refunds = []
+		cls.refunds = {}
 		cls.next_refund_status = "succeeded"
+
+	@classmethod
+	def set_refund_status(cls, refund_id: str, status: str):
+		cls.refunds[refund_id].status = status
 
 	@classmethod
 	def pay(cls, session_id: str):
@@ -64,11 +70,18 @@ class StubStripeClient(BaseStripeClient):
 
 	def create_refund(self, params: dict) -> StripeRefund:
 		self.created_refunds.append(params)
-		return StripeRefund(
+		refund = StripeRefund(
 			id=f"re_test_{frappe.generate_hash(length=12)}",
 			status=self.next_refund_status,
 			amount=params["amount"],
 		)
+		self.refunds[refund.id] = refund
+		return refund.model_copy()
+
+	def retrieve_refund(self, refund_id: str) -> StripeRefund:
+		if refund_id not in self.refunds:
+			raise stripe.InvalidRequestError(f"No such refund: '{refund_id}'", param="id")
+		return self.refunds[refund_id].model_copy()
 
 
 def sign_payload(payload: bytes, secret: str, timestamp: int | None = None) -> str:

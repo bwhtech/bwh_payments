@@ -37,3 +37,6 @@ class BaseRazorpayClient(ABC):
 	@abstractmethod
 	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
 		"""Refund `amount` minor units of a captured payment."""
+
+	@abstractmethod
+	def get_refund(self, refund_id: str) -> RazorpayRefund: ...

@@ -20,6 +20,7 @@ class StubRazorpayClient(BaseRazorpayClient):
 	links: ClassVar[dict[str, RazorpayPaymentLink]] = {}
 	created_links: ClassVar[list[dict]] = []
 	created_refunds: ClassVar[list[dict]] = []
+	refunds: ClassVar[dict[str, RazorpayRefund]] = {}
 	next_refund_status: ClassVar[str] = "processed"
 
 	@classmethod
@@ -27,7 +28,12 @@ class StubRazorpayClient(BaseRazorpayClient):
 		cls.links = {}
 		cls.created_links = []
 		cls.created_refunds = []
+		cls.refunds = {}
 		cls.next_refund_status = "processed"
+
+	@classmethod
+	def set_refund_status(cls, refund_id: str, status: str):
+		cls.refunds[refund_id].status = status
 
 	@classmethod
 	def add_link(cls, status: str = "created") -> str:
@@ -76,9 +82,16 @@ class StubRazorpayClient(BaseRazorpayClient):
 
 	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
 		self.created_refunds.append({"payment_id": payment_id, "amount": amount})
-		return RazorpayRefund(
+		refund = RazorpayRefund(
 			id=f"rfnd_{frappe.generate_hash(length=12)}", status=self.next_refund_status, amount=amount
 		)
+		self.refunds[refund.id] = refund
+		return refund.model_copy()
+
+	def get_refund(self, refund_id: str) -> RazorpayRefund:
+		if refund_id not in self.refunds:
+			frappe.throw(_("Razorpay rejected the request: {0}").format("refund not found"))
+		return self.refunds[refund_id].model_copy()
 
 
 def sign_payload(payload: bytes, secret: str) -> str:

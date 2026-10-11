@@ -179,6 +179,10 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 		return (link.status or "").strip().casefold() == RAZORPAY_CANCELLED_STATUS
 
+	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult:
+		refund = self.get_client().get_refund(refund_id)
+		return RefundResult(refund_id=refund.id, status=refund.status)
+
 	def get_transaction_ref(self, session_id: str) -> str | None:
 		payments = self.get_client().get_payment_link(session_id).payments or []
 		for wanted in (RAZORPAY_CAPTURED_STATUS, RAZORPAY_AUTHORISED_STATUS):

@@ -20,6 +20,9 @@ class LiveStripeClient(BaseStripeClient):
 	def create_refund(self, params: dict) -> StripeRefund:
 		return StripeRefund.model_validate(self.client.v1.refunds.create(params), from_attributes=True)
 
+	def retrieve_refund(self, refund_id: str) -> StripeRefund:
+		return StripeRefund.model_validate(self.client.v1.refunds.retrieve(refund_id), from_attributes=True)
+
 
 def parse_session(session) -> StripeCheckoutSession:
 	# StripeObject is attribute-based, not a dict, since SDK 15.

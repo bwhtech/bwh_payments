@@ -158,6 +158,39 @@ class TestGatewayRefund(IntegrationTestCase):
 
 		self.assertEqual(len(StubStripeClient.created_refunds), 1)
 
+	def test_syncing_settles_a_pending_refund_from_what_the_gateway_reports(self):
+		payment_request = self.make_paid_request()
+		StubStripeClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(30)
+		StubStripeClient.set_refund_status(refund.refund_id, "succeeded")
+
+		payment_request.sync_refunds()
+
+		refund.reload()
+		payment_request.reload()
+		self.assertEqual(refund.status, "Processed")
+		self.assertEqual(flt(payment_request.refund_amount), 30)
+
+	def test_syncing_leaves_a_refund_pending_when_the_gateway_cannot_report_it(self):
+		payment_request = self.make_paid_request()
+		StubStripeClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(30)
+		settings_class = type(payment_request.get_gateway_settings())
+
+		with patch.object(settings_class, "get_refund_status", return_value=None):
+			payment_request.sync_refunds()
+
+		refund.reload()
+		self.assertEqual(refund.status, "Pending")
+
+	def test_only_a_user_who_can_edit_the_payment_can_sync_its_refunds(self):
+		payment_request = self.make_paid_request()
+
+		frappe.set_user("Guest")
+		self.addCleanup(frappe.set_user, "Administrator")
+		with self.assertRaises(frappe.PermissionError):
+			payment_request.sync_refunds()
+
 	def test_gateway_refund_statuses_map_to_three_outcomes(self):
 		for gateway_status, expected in (
 			("succeeded", "Processed"),
