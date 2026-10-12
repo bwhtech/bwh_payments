@@ -1,0 +1,118 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block page_content %}
+<style>
+	.bt-checkout { max-width: 480px; margin: 48px auto; padding: 0 16px; }
+	.bt-checkout h1 { font-size: 1.5rem; margin-bottom: 4px; }
+	.bt-amount { font-size: 1.25rem; color: var(--text-muted, #6b7280); margin-bottom: 24px; }
+	.bt-error { color: var(--red-600, #dc2626); margin: 12px 0; min-height: 1.5em; }
+	.bt-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+	.bt-actions .btn-primary { flex: 1; }
+</style>
+
+<div class="bt-checkout">
+	{% if error %}
+		<h1>{{ _("Payment unavailable") }}</h1>
+		<p class="bt-error">{{ error }}</p>
+		{% if cancel_url %}<a href="{{ cancel_url }}">{{ _("Back to cart") }}</a>{% endif %}
+	{% else %}
+		<h1>{{ _("Pay by card") }}</h1>
+		<div class="bt-amount">{{ amount }} {{ currency }}</div>
+		<div id="dropin-container"></div>
+		<p class="bt-error" id="bt-error" role="alert"></p>
+		<div class="bt-actions">
+			<button class="btn btn-primary" id="bt-pay" disabled>{{ _("Pay") }} {{ amount }} {{ currency }}</button>
+			<a href="{{ cancel_url }}">{{ _("Cancel") }}</a>
+		</div>
+	{% endif %}
+</div>
+{% endblock %}
+
+{% block script %}
+{{ super() }}
+{% if not error %}
+<script src="https://js.braintreegateway.com/web/dropin/1.44.1/js/dropin.min.js"></script>
+<script>
+(function () {
+	const payButton = document.getElementById("bt-pay");
+	const errorBox = document.getElementById("bt-error");
+	const threeDSecure = {{ three_d_secure | tojson }};
+
+	function showError(message) {
+		errorBox.textContent = message;
+		payButton.disabled = false;
+	}
+
+	braintree.dropin.create(
+		{
+			authorization: {{ client_token | tojson }},
+			container: "#dropin-container",
+			threeDSecure: threeDSecure,
+		},
+		function (createError, instance) {
+			if (createError) {
+				showError({{ _("The card form could not load. Please refresh the page.") | tojson }});
+				return;
+			}
+			payButton.disabled = false;
+
+			payButton.addEventListener("click", function () {
+				// Disabled until the server answers, so a double click cannot send two nonces.
+				payButton.disabled = true;
+				errorBox.textContent = "";
+				const options = threeDSecure
+					? { threeDSecure: { amount: {{ amount | tojson }}, email: {{ email | tojson }} || undefined } }
+					: {};
+
+				instance.requestPaymentMethod(options, function (requestError, payload) {
+					if (requestError) {
+						showError(requestError.message);
+						return;
+					}
+					if (threeDSecure && payload.liabilityShifted === false && payload.liabilityShiftPossible) {
+						instance.clearSelectedPaymentMethod();
+						showError({{ _("Card verification failed. Please try again or use another card.") | tojson }});
+						return;
+					}
+
+					fetch("/api/method/bwh_payments.bwh_payments.braintree_checkout.pay", {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							"X-Frappe-CSRF-Token": (window.frappe && frappe.csrf_token) || "",
+						},
+						body: JSON.stringify({ session: {{ session | tojson }}, nonce: payload.nonce }),
+					})
+						.then(function (response) {
+							return response.json();
+						})
+						.then(function (data) {
+							const result = data.message || {};
+							if (result.redirect_url) {
+								window.location.href = result.redirect_url;
+								return;
+							}
+							instance.clearSelectedPaymentMethod();
+							showError(result.error || readServerError(data));
+						})
+						.catch(function () {
+							showError({{ _("Something went wrong. Please check your connection and try again.") | tojson }});
+						});
+				});
+			});
+		}
+	);
+
+	function readServerError(data) {
+		try {
+			return JSON.parse(JSON.parse(data._server_messages)[0]).message;
+		} catch (e) {
+			return {{ _("The payment could not be completed.") | tojson }};
+		}
+	}
+})();
+</script>
+{% endif %}
+{% endblock %}
