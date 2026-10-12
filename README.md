@@ -12,12 +12,13 @@
 	<img src=".github/logos/razorpay.svg" alt="Razorpay" height="40" />
 	<img src=".github/logos/telr.svg" alt="Telr" height="40" />
 	<img src=".github/logos/tabby.svg" alt="Tabby" height="40" />
+	<img src=".github/logos/paypal.svg" alt="PayPal" height="40" />
 </p>
 
 </div>
 
-BWH Payments lets a Frappe app take payments through Stripe, Razorpay, Telr or Tabby, using the same code
-for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payments/get-started/overview)**.
+BWH Payments lets a Frappe app take payments through Stripe, Razorpay, Telr, Tabby or PayPal, using the
+same code for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payments/get-started/overview)**.
 
 ### Gateways
 
@@ -25,6 +26,7 @@ for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payment
 - **Razorpay**: cards, UPI, netbanking and wallets in India
 - **Telr**: cards and local payment methods in the GCC
 - **Tabby**: buy now, pay later in Saudi Arabia, the UAE, Kuwait, Bahrain and Qatar
+- **PayPal**: PayPal wallet payments in the currencies PayPal settles
 
 ### Features
 
