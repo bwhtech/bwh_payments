@@ -3,7 +3,7 @@
 import frappe
 from frappe import _
 
-from bwh_payments.base_class import GatewayOption
+from bwh_payments.base_class import GatewayInfo, GatewayOption
 from bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_request import (
 	GatewayPaymentRequest,
 )
@@ -11,16 +11,19 @@ from bwh_payments.bwh_payments.doctype.gateway_refund.gateway_refund import norm
 from bwh_payments.bwh_payments.utils import (
 	get_available_payment_modes,
 	get_gateway_settings,
+	get_gateway_settings_doctypes,
 	resolve_payment_mode,
 	supports_currency,
 )
 from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
 
 __all__ = [
+	"GatewayInfo",
 	"GatewayOption",
 	"create_payment",
 	"from_minor_units",
 	"get_gateway_options",
+	"get_gateways",
 	"get_payment_gateways",
 	"record_external_payment",
 	"record_external_refund",
@@ -74,6 +77,25 @@ def get_gateway_options(currency: str | None = None) -> list[GatewayOption]:
 			)
 		)
 	return options
+
+
+def get_gateways() -> list[GatewayInfo]:
+	"""Every gateway installed on the site, enabled or not, described for a settings screen."""
+	gateways = []
+	for doctype in get_gateway_settings_doctypes():
+		settings = frappe.get_cached_doc(doctype)
+		gateways.append(
+			GatewayInfo(
+				name=settings.get_gateway_name(),
+				settings_doctype=doctype,
+				description=settings.description,
+				docs_url=settings.docs_url,
+				capabilities=list(settings.capabilities),
+				logo=settings.logo,
+				logo_dark=settings.logo_dark or settings.logo,
+			)
+		)
+	return sorted(gateways, key=lambda gateway: gateway.name.casefold())
 
 
 def validate_currency(gateway: str, currency: str):

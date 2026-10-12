@@ -15,6 +15,8 @@ dependencies = [
     "stripe>=12.5,<16",
     # Gateway results and service-client responses are pydantic models. Frappe pins the exact version.
     "pydantic>=2,<3",
+    # The Braintree controller and service client import the SDK at module level.
+    "braintree>=4.20,<5",
 ]
 
 [build-system]

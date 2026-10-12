@@ -5,7 +5,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex and others) 
 ## What this is
 
 `bwh_payments` is a Frappe app (Frappe 16+, Python 3.14) that takes payments through hosted checkout pages
-on Stripe, Razorpay, Telr and Tabby, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
+on Stripe, Razorpay, Telr, Tabby, PayPal and Braintree, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
 https://docs.bwh.tech/bwh-payments/get-started/overview
 
 The repo sits inside a bench at `/Users/harsh/bwh/bwh_payments` (`apps/bwh_payments`); the local site is
@@ -42,7 +42,8 @@ PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport
 `refund_payment`, `handle_webhook`. Optional methods have defaults, so a third-party gateway that skips them
 keeps working: `cancel_session` (False), `get_transaction_ref` (the settled payment's id; None),
 `get_refund_status` (None = cannot report), `supported_currencies` (None = any), and the `logo` /
-`logo_dark` class attributes. `create_session` also takes an optional `return_url`, passed only when set.
+`logo_dark`, `description`, `docs_url` and `capabilities` class attributes. `REUSABLE_CHECKOUT` in
+`capabilities` means the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
 carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`). Callers read them through
 `<Model>.model_validate`, so a third-party gateway that still returns dicts keeps working. Each gateway is a
@@ -89,6 +90,8 @@ as it stands.
   `company`, `redirect_to` (a path on this site) and `customer_*`.
 - `get_payment_gateways` (names), `get_gateway_options(currency=None)` (`GatewayOption`: name, title,
   logos), `validate_currency(gateway, currency)`, `resolve_payment_mode`.
+- `get_gateways()` (`GatewayInfo`): every installed gateway, enabled or not, with its settings DocType,
+  description, docs link, capabilities and logos, so a consumer's settings screen needs no gateway list.
 - `refund(payment_request, amount=None, reference=None)` returns the Gateway Refund;
   `sync_refunds(payment_request)`.
 - `record_external_payment` / `record_external_refund`: import history settled elsewhere, idempotent,
@@ -150,6 +153,22 @@ An insert that is already settled is an import and fires neither.
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
   `get_payment_status` also *captures* an authorised payment; that capture is where money is taken.
+- **PayPal**: raw HTTP (Orders v2) with a cached client-credentials token. `get_payment_status` and the
+  `CHECKOUT.ORDER.APPROVED` webhook both capture an approved order; the loser of that race gets
+  `ORDER_ALREADY_CAPTURED` (`PayPalOrderAlreadyCapturedError`), which counts as paid. Webhooks are signed
+  with a certificate, so verification is a call back to PayPal (`verify_webhook_signature`), the one
+  verifier that goes through the client; the stub's `next_verification_status` stands in for a forgery.
+  `cancel_session` stays `False`: PayPal cannot cancel an unapproved order. Refunds report `processed` /
+  `pending` (PayPal's `COMPLETED` / `PENDING`); a pending one settles through `get_refund_status`.
+  `get_transaction_ref` is the capture's id.
+- **Braintree**: official SDK, no hosted page. `create_session` returns our own random 32-character
+  token as `session_id` and points `redirect_url` at `www/braintree-checkout`, which renders Drop-in.
+  The guest endpoint `braintree_checkout.pay(session, nonce)` charges once under a MariaDB `GET_LOCK`
+  (row locks do not survive `create_request_log`'s commits), records `gateway_transaction_ref`, and
+  syncs the request to Paid itself, so closing the tab still places the order. Sales carry the token
+  as `order_id`; search is filtered to `type == sale` because refunds share it. Before settlement only
+  a full refund (a void, reported `processed`) is possible. Webhooks are verified locally by the SDK
+  with our keys and then ignored.
 
 ### Money and currency rules
 

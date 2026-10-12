@@ -2,6 +2,9 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+# The checkout link stays payable after the shopper leaves it, so a caller can send them back to it.
+REUSABLE_CHECKOUT = "reusable_checkout"
+
 
 class GatewayResult(BaseModel):
 	# Rejecting a numeric refund id after money moved would leave the refund unrecorded.
@@ -51,11 +54,27 @@ class GatewayOption(BaseModel):
 	logo_dark: str | None = None
 
 
+class GatewayInfo(BaseModel):
+	"""A gateway this app can take payments through, as a settings screen lists it, set up or not."""
+
+	name: str
+	settings_doctype: str
+	description: str | None = None
+	docs_url: str | None = None
+	capabilities: list[str] = []
+	logo: str | None = None
+	logo_dark: str | None = None
+
+
 class PaymentGatewayBase(ABC):
 	"""Contract for every `<Gateway> Gateway Settings` Single. Amounts are in major units (12.34)."""
 
 	logo: str | None = None
 	logo_dark: str | None = None
+	# One line for a merchant choosing a gateway, and where they find its credentials.
+	description: str | None = None
+	docs_url: str | None = None
+	capabilities: tuple[str, ...] = ()
 
 	@abstractmethod
 	def create_session(
