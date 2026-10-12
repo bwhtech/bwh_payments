@@ -5,7 +5,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex and others) 
 ## What this is
 
 `bwh_payments` is a Frappe app (Frappe 16+, Python 3.14) that takes payments through hosted checkout pages
-on Stripe, Razorpay, Telr and Tabby, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
+on Stripe, Razorpay, Telr, Tabby and PayPal, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
 https://docs.bwh.tech/bwh-payments/get-started/overview
 
 The repo sits inside a bench at `/Users/harsh/bwh/bwh_payments` (`apps/bwh_payments`); the local site is
@@ -153,6 +153,14 @@ An insert that is already settled is an import and fires neither.
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
   `get_payment_status` also *captures* an authorised payment; that capture is where money is taken.
+- **PayPal**: raw HTTP (Orders v2) with a cached client-credentials token. `get_payment_status` and the
+  `CHECKOUT.ORDER.APPROVED` webhook both capture an approved order; the loser of that race gets
+  `ORDER_ALREADY_CAPTURED` (`PayPalOrderAlreadyCapturedError`), which counts as paid. Webhooks are signed
+  with a certificate, so verification is a call back to PayPal (`verify_webhook_signature`), the one
+  verifier that goes through the client; the stub's `next_verification_status` stands in for a forgery.
+  `cancel_session` stays `False`: PayPal cannot cancel an unapproved order. Refunds report `processed` /
+  `pending` (PayPal's `COMPLETED` / `PENDING`); a pending one settles through `get_refund_status`.
+  `get_transaction_ref` is the capture's id.
 
 ### Money and currency rules
 
