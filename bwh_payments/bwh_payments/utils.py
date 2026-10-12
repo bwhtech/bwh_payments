@@ -3,7 +3,10 @@ from contextlib import contextmanager
 from urllib.parse import urlsplit, urlunsplit
 
 import frappe
+from frappe.model.base_document import get_controller
 from frappe.utils.caching import redis_cache
+
+from bwh_payments.base_class import PaymentGatewayBase
 
 LANGUAGE_SEGMENT = re.compile(r"^[a-z]{2}(-[A-Za-z]{2})?$")
 
@@ -42,6 +45,14 @@ def get_gateway_settings(gateway: str):
 	return frappe.get_cached_doc(
 		frappe.get_cached_value("Payment Gateway Profile", gateway, "gateway_settings")
 	)
+
+
+def get_gateway_settings_doctypes() -> list[str]:
+	"""Every `<Gateway> Gateway Settings` Single on the site, including another app's gateways."""
+	doctypes = frappe.get_all(
+		"DocType", filters={"issingle": 1, "name": ("like", "% Gateway Settings")}, pluck="name"
+	)
+	return [doctype for doctype in doctypes if issubclass(get_controller(doctype), PaymentGatewayBase)]
 
 
 def supports_currency(settings, currency: str) -> bool:
