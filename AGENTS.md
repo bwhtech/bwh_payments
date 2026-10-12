@@ -5,7 +5,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex and others) 
 ## What this is
 
 `bwh_payments` is a Frappe app (Frappe 16+, Python 3.14) that takes payments through hosted checkout pages
-on Stripe, Razorpay, Telr, Tabby and PayPal, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
+on Stripe, Razorpay, Telr, Tabby, PayPal, PayU and Braintree, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
 https://docs.bwh.tech/bwh-payments/get-started/overview
 
 The repo sits inside a bench at `/Users/harsh/bwh/bwh_payments` (`apps/bwh_payments`); the local site is
@@ -187,6 +187,14 @@ An insert that is already settled is an import and fires neither.
   capture under the same sequential ids. `list_refunds` reads every action by PayU ID (`var2=payuid`).
   PayU's replies arrive as JSON text, not a JSON content type. A failed attempt stays Pending, because
   the shopper can retry on the same txnid. INR only.
+- **Braintree**: official SDK, no hosted page. `create_session` returns our own random 32-character
+  token as `session_id` and points `redirect_url` at `www/braintree-checkout`, which renders Drop-in.
+  The guest endpoint `braintree_checkout.pay(session, nonce)` charges once under a MariaDB `GET_LOCK`
+  (row locks do not survive `create_request_log`'s commits), records `gateway_transaction_ref`, and
+  syncs the request to Paid itself, so closing the tab still places the order. Sales carry the token
+  as `order_id`; search is filtered to `type == sale` because refunds share it. Before settlement only
+  a full refund (a void, reported `processed`) is possible. Webhooks are verified locally by the SDK
+  with our keys and then ignored.
 
 ### Money and currency rules
 
