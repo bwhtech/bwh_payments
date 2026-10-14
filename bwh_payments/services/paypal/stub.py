@@ -131,10 +131,8 @@ class StubPayPalClient(BasePayPalClient):
 	def refund_capture(self, capture_id: str, payload: dict) -> PayPalRefund:
 		self.refunds.append({"capture_id": capture_id, **payload})
 		amount = payload.get("amount") or {}
-		refund = PayPalRefund(
-			id=f"REFUND{frappe.generate_hash(length=12).upper()}",
-			status=self.next_refund_status,
-			amount=PayPalAmount(currency_code=amount.get("currency_code"), value=amount.get("value")),
+		refund = build_refund(
+			capture_id, self.next_refund_status, amount.get("value"), amount.get("currency_code")
 		)
 		self.issued_refunds[refund.id] = refund
 		return refund.model_copy(deep=True)
@@ -174,3 +172,33 @@ def build_capture_completed_event(order_id: str, event_id: str = "WH-TEST-CAPTUR
 			},
 		}
 	).encode()
+
+
+def build_refund_event(
+	refund: PayPalRefund,
+	event_type: str = "PAYMENT.CAPTURE.REFUNDED",
+	event_id: str | None = None,
+) -> bytes:
+	return json.dumps(
+		{
+			"id": event_id or f"WH-TEST-REFUND-{frappe.generate_hash(length=8).upper()}",
+			"event_type": event_type,
+			"resource": refund.model_dump(exclude_none=True),
+		}
+	).encode()
+
+
+def build_refund(
+	capture_id: str, status: str = "COMPLETED", value: str = "5.00", currency_code: str = "USD"
+) -> PayPalRefund:
+	"""A refund as PayPal sends it, naming its capture only in the `up` link."""
+	refund_id = f"REFUND{frappe.generate_hash(length=12).upper()}"
+	return PayPalRefund(
+		id=refund_id,
+		status=status,
+		amount=PayPalAmount(currency_code=currency_code, value=value),
+		links=[
+			PayPalLink(rel="self", href=f"https://api.paypal.test/v2/payments/refunds/{refund_id}"),
+			PayPalLink(rel="up", href=f"https://api.paypal.test/v2/payments/captures/{capture_id}"),
+		],
+	)

@@ -74,7 +74,8 @@ Every external service sits behind a client in `bwh_payments/services/<service>/
 The settings controller picks the client in `get_client()`: the stub when `frappe.in_test`, otherwise the
 live one. There is no other switch, so a real site can never run on a stub. The controller keeps every
 decision: currency conversion, URL building, status maps, capture and refund rules, and webhook signature
-checks. Signature checks are local crypto and must never move into a client a stub could replace.
+checks. Signature checks are local crypto and must never move into a client a stub could replace. PayPal is
+the one deliberate exception (see below).
 
 Live HTTP clients pass no timeout: `make_request` accepts one only from Frappe 17. Add it when Frappe 16
 support is dropped.
@@ -153,13 +154,18 @@ An insert that is already settled is an import and fires neither.
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
   `get_payment_status` also *captures* an authorised payment; that capture is where money is taken.
-- **PayPal**: raw HTTP (Orders v2) with a cached client-credentials token. `get_payment_status` and the
-  `CHECKOUT.ORDER.APPROVED` webhook both capture an approved order; the loser of that race gets
-  `ORDER_ALREADY_CAPTURED` (`PayPalOrderAlreadyCapturedError`), which counts as paid. Webhooks are signed
-  with a certificate, so verification is a call back to PayPal (`verify_webhook_signature`), the one
-  verifier that goes through the client; the stub's `next_verification_status` stands in for a forgery.
-  `cancel_session` stays `False`: PayPal cannot cancel an unapproved order. Refunds report `processed` /
-  `pending` (PayPal's `COMPLETED` / `PENDING`); a pending one settles through `get_refund_status`.
+- **PayPal**: raw HTTP (Orders v2) with a client-credentials token, cached per mode and client id.
+  Only `get_payment_status` captures an approved order. The `CHECKOUT.ORDER.APPROVED` webhook captures
+  nothing itself: it queues `sync_status` for our own Pending request with that `order_ref` and returns
+  `None`, so a guest request never moves money and an order that is not ours is never captured. When the
+  return page and that job race, the loser gets `ORDER_ALREADY_CAPTURED`
+  (`PayPalOrderAlreadyCapturedError`), which counts as paid. Webhooks are signed with a certificate, so
+  verification is a call back to PayPal (`verify_webhook_signature`). It is the one verifier that goes
+  through the client, by decision: checking PayPal's certificate chain locally is easy to get wrong. The
+  stub's `next_verification_status` stands in for a forgery. `cancel_session` stays `False`: PayPal
+  cannot cancel an unapproved order. Refunds report `processed` for PayPal's `COMPLETED` and PayPal's own
+  status otherwise. Refund events: `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED`,
+  `PAYMENT.REFUND.PENDING`, `PAYMENT.REFUND.FAILED`; the refund names its capture only in its `up` link.
   `get_transaction_ref` is the capture's id.
 
 ### Money and currency rules

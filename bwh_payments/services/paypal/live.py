@@ -54,8 +54,9 @@ class LivePayPalClient(BasePayPalClient):
 		)
 
 	def get_access_token(self) -> str:
-		# `frappe.cache` is per site; the mode keeps a sandbox token away from the live API.
-		cache_key = f"paypal_access_token::{self.mode}"
+		# `frappe.cache` is per site. The mode and client id keep a token to the account that issued it,
+		# so new credentials never create orders in the old account.
+		cache_key = f"paypal_access_token::{self.mode}::{self.client_id}"
 		if token := frappe.cache.get_value(cache_key):
 			return token
 
@@ -108,12 +109,12 @@ class LivePayPalClient(BasePayPalClient):
 
 def throw_request_error(url: str, exception: Exception) -> NoReturn:
 	body = read_paypal_error_body(exception) or {}
-	description = read_paypal_error(body)
+	detail = (body.get("details") or [{}])[0] or {}
+	description = detail.get("description") or body.get("message") or body.get("name")
 	log_request(url, error=description or exception)
+	issue = (detail.get("issue") or "").strip().upper()
 	exc = (
-		PayPalOrderAlreadyCapturedError
-		if read_paypal_issue(body) == PAYPAL_ALREADY_CAPTURED_ISSUE
-		else frappe.ValidationError
+		PayPalOrderAlreadyCapturedError if issue == PAYPAL_ALREADY_CAPTURED_ISSUE else frappe.ValidationError
 	)
 	frappe.throw(_("PayPal rejected the request: {0}").format(description or _("unknown error")), exc=exc)
 
@@ -123,7 +124,7 @@ def read_response(url: str, response) -> dict:
 		log_request(url, error="PayPal returned a non-JSON body")
 		frappe.throw(_("PayPal returned an unreadable response"))
 
-	log_request(url, output=summarise_paypal_response(response))
+	log_request(url, output={"id": response.get("id"), "status": response.get("status")})
 	return response
 
 
@@ -139,23 +140,6 @@ def log_request(url: str, output=None, error=None):
 		error=error,
 		status="Failed" if error else "Completed",
 	)
-
-
-def summarise_paypal_response(response: dict) -> dict:
-	return {"id": response.get("id"), "status": response.get("status")}
-
-
-def read_paypal_error(body: dict) -> str | None:
-	details = body.get("details") or []
-	description = (details[0] or {}).get("description") if details else None
-	return description or body.get("message") or body.get("name")
-
-
-def read_paypal_issue(body: dict) -> str | None:
-	details = body.get("details") or []
-	if not details:
-		return None
-	return ((details[0] or {}).get("issue") or "").strip().upper() or None
 
 
 def read_paypal_error_body(exception: Exception) -> dict | None:

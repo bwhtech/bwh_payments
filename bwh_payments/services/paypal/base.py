@@ -44,6 +44,7 @@ class PayPalRefund(GatewayModel):
 	id: str | None = None
 	status: str | None = None
 	amount: PayPalAmount | None = None
+	links: list[PayPalLink] | None = None
 
 
 class PayPalWebhookVerification(GatewayModel):

@@ -8,16 +8,15 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils.data import flt
 
-from bwh_payments.base_class import (
-	REUSABLE_CHECKOUT,
-	CheckoutSession,
-	PaymentGatewayBase,
-	RefundResult,
-	WebhookEvent,
-)
-from bwh_payments.bwh_payments.utils import get_localised_url
+from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
+from bwh_payments.bwh_payments.utils import get_localised_url, run_as_administrator, supports_currency
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
-from bwh_payments.services.paypal.base import BasePayPalClient, PayPalOrder, PayPalOrderAlreadyCapturedError
+from bwh_payments.services.paypal.base import (
+	BasePayPalClient,
+	PayPalOrder,
+	PayPalOrderAlreadyCapturedError,
+	PayPalRefund,
+)
 from bwh_payments.services.paypal.live import LivePayPalClient
 from bwh_payments.services.paypal.stub import StubPayPalClient
 
@@ -61,13 +60,6 @@ PAYPAL_STATUS_MAP = {
 
 PAYPAL_APPROVED_STATUS = "APPROVED"
 PAYPAL_ACCEPTED_REFUND_STATUSES = ("COMPLETED", "PENDING")
-# PayPal's refund statuses in the words Gateway Refund understands; anything else stays Pending.
-PAYPAL_REFUND_STATUS_MAP = {
-	"COMPLETED": "processed",
-	"PENDING": "pending",
-	"FAILED": "failed",
-	"CANCELLED": "cancelled",
-}
 # The balance of a partially refunded capture stays refundable.
 PAYPAL_REFUNDABLE_CAPTURE_STATUSES = ("COMPLETED", "PARTIALLY_REFUNDED")
 # A fully refunded capture is still the payment that settled.
@@ -76,9 +68,13 @@ PAYPAL_VERIFICATION_SUCCESS = "SUCCESS"
 
 PAYPAL_ORDER_APPROVED_EVENT = "CHECKOUT.ORDER.APPROVED"
 PAYPAL_CAPTURE_COMPLETED_EVENT = "PAYMENT.CAPTURE.COMPLETED"
-
-# `payer-action` answers an order created with `payment_source`; `approve` is the older spelling.
-PAYPAL_REDIRECT_LINK_RELS = ("payer-action", "approve")
+# Each carries the refund as its resource. REVERSED is PayPal taking the money back, e.g. a chargeback.
+PAYPAL_REFUND_EVENTS = (
+	"PAYMENT.CAPTURE.REFUNDED",
+	"PAYMENT.CAPTURE.REVERSED",
+	"PAYMENT.REFUND.PENDING",
+	"PAYMENT.REFUND.FAILED",
+)
 
 # Title case: `dict(frappe.request.headers)` drops werkzeug's case-insensitivity.
 PAYPAL_SIGNATURE_HEADERS = {
@@ -94,7 +90,7 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 	description = "PayPal wallet payments. Not for INR or Gulf currencies."
 	docs_url = "https://developer.paypal.com/dashboard/applications"
 	# An approval link stays payable until the order is captured or expires.
-	capabilities = (REUSABLE_CHECKOUT,)
+	reusable_checkout = True
 
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -138,7 +134,12 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
-		validate_paypal_currency(currency)
+		if not supports_currency(self, currency):
+			frappe.throw(
+				_("PayPal cannot take payment in {0}. It supports {1}.").format(
+					frappe.bold(currency), ", ".join(PAYPAL_SUPPORTED_CURRENCIES)
+				)
+			)
 
 		success_url = return_url or self.build_return_url(self.success_url, _("Success URL"), reference)
 		cancel_url = return_url or self.build_return_url(self.cancelled_url, _("Cancelled URL"), reference)
@@ -211,25 +212,27 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 		resource = event.get("resource") or {}
 
 		if event_type == PAYPAL_ORDER_APPROVED_EVENT:
-			session_id = resource.get("id")
-			if not session_id:
+			if not resource.get("id"):
 				frappe.throw(_("PayPal sent a {0} event with no order id").format(event_type))
-			# Charges a shopper who approved on PayPal and never came back to the storefront.
-			status = PAYPAL_STATUS_MAP.get(read_status(self.capture_order(session_id)), "Pending")
-		elif event_type == PAYPAL_CAPTURE_COMPLETED_EVENT:
-			# `resource.id` is the capture; the order id is only in supplementary data.
-			related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
-			session_id = related_ids.get("order_id")
-			if not session_id:
-				frappe.throw(_("PayPal sent a {0} event with no order id").format(event_type))
-			status = "Paid"
-		else:
+			enqueue_capture(resource["id"])
+			return None
+		if event_type in PAYPAL_REFUND_EVENTS:
+			return read_refund_event(event)
+		if event_type != PAYPAL_CAPTURE_COMPLETED_EVENT:
 			return None
 
-		return WebhookEvent(session_id=session_id, status=status, event_id=event.get("id"))
+		# `resource.id` is the capture; the order id is only in supplementary data.
+		related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+		if not related_ids.get("order_id"):
+			frappe.throw(_("PayPal sent a {0} event with no order id").format(event_type))
+		return WebhookEvent(session_id=related_ids["order_id"], status="Paid", event_id=event.get("id"))
 
 	def verify_webhook(self, payload: bytes, headers: dict) -> dict:
-		"""PayPal signs with a certificate, so verification is a call back to PayPal with our webhook id."""
+		"""PayPal signs with a certificate, so we ask PayPal to verify the delivery with our webhook id.
+
+		The one verifier that goes through the client, on purpose: checking PayPal's certificate chain
+		locally is easy to get wrong, and PayPal's own check is the documented way.
+		"""
 		if not self.webhook_id:
 			frappe.throw(_("Webhook ID is not configured in PayPal Gateway Settings"))
 
@@ -290,13 +293,37 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 		return find_capture_id(self.get_client().get_order(session_id), PAYPAL_SETTLED_CAPTURE_STATUSES)
 
 
-def validate_paypal_currency(currency: str):
-	if (currency or "").strip().upper() not in PAYPAL_SUPPORTED_CURRENCIES:
-		frappe.throw(
-			_("PayPal cannot take payment in {0}. It supports {1}.").format(
-				frappe.bold(currency), ", ".join(PAYPAL_SUPPORTED_CURRENCIES)
-			)
+def enqueue_capture(session_id: str):
+	"""Capture moves money, so a guest webhook never does it. Our own request's status sync does."""
+	if payment_request := frappe.db.get_value(
+		"Gateway Payment Request", {"order_ref": session_id, "status": "Pending"}, "name"
+	):
+		frappe.enqueue(
+			"bwh_payments.bwh_payments.doctype.paypal_gateway_settings.paypal_gateway_settings.sync_payment_request",
+			queue="short",
+			payment_request=payment_request,
+			now=frappe.in_test,
 		)
+
+
+def sync_payment_request(payment_request: str):
+	"""As Administrator, like the return page: a paid request settles its referenced document."""
+	with run_as_administrator():
+		frappe.get_doc("Gateway Payment Request", payment_request).sync_status()
+
+
+def read_refund_event(event: dict) -> WebhookEvent:
+	refund = PayPalRefund.model_validate(event.get("resource") or {})
+	if not refund.id:
+		frappe.throw(_("PayPal sent a refund event with no refund id"))
+
+	return WebhookEvent(
+		refund_id=refund.id,
+		status=read_refund_status(refund),
+		refund_amount=flt(refund.amount.value) if refund.amount and refund.amount.value else None,
+		transaction_ref=get_refunded_capture_id(refund),
+		event_id=event.get("id"),
+	)
 
 
 def get_paypal_exponent(currency: str) -> int:
@@ -322,10 +349,9 @@ def read_status(entity) -> str:
 
 
 def get_redirect_url(order: PayPalOrder) -> str:
-	links = {link.rel: link.href for link in order.links or []}
-	for rel in PAYPAL_REDIRECT_LINK_RELS:
-		if links.get(rel):
-			return links[rel]
+	for link in order.links or []:
+		if link.rel == "payer-action" and link.href:
+			return link.href
 
 	frappe.throw(_("PayPal created an order with no approval link"))
 
@@ -351,5 +377,14 @@ def find_capture_id(order: PayPalOrder, statuses: tuple[str, ...]) -> str | None
 	return None
 
 
-def read_refund_status(refund) -> str:
-	return PAYPAL_REFUND_STATUS_MAP.get(read_status(refund), "pending")
+def get_refunded_capture_id(refund: PayPalRefund) -> str | None:
+	"""A refund names its capture only in its `up` link: `.../v2/payments/captures/<id>`."""
+	for link in refund.links or []:
+		if link.rel == "up" and link.href:
+			return link.href.rstrip("/").rsplit("/", 1)[-1]
+	return None
+
+
+def read_refund_status(refund: PayPalRefund) -> str | None:
+	# Gateway Refund reads pending, failed and cancelled as they are; only COMPLETED needs a word.
+	return "processed" if read_status(refund) == "COMPLETED" else refund.status

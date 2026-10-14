@@ -5,7 +5,6 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from bwh_payments.api import get_gateways
-from bwh_payments.base_class import REUSABLE_CHECKOUT
 from bwh_payments.bwh_payments.doctype.paypal_gateway_settings import paypal_gateway_settings
 from bwh_payments.services.paypal.stub import StubPayPalClient
 
@@ -297,7 +296,7 @@ class TestPayPalGatewaySettings(PayPalTestCase):
 		StubPayPalClient.next_refund_status = "PENDING"
 
 		result = settings.refund_payment(order_id, 5, "USD")
-		self.assertEqual(result.status, "pending")
+		self.assertEqual(result.status, "PENDING")
 
 		StubPayPalClient.set_refund_status(result.refund_id, "COMPLETED")
 		self.assertEqual(settings.get_refund_status(order_id, result.refund_id).status, "processed")
@@ -346,4 +345,4 @@ class TestPayPalGatewaySettings(PayPalTestCase):
 		gateway = next(gateway for gateway in get_gateways() if gateway.name == PAYPAL_GATEWAY)
 
 		self.assertEqual(gateway.settings_doctype, "PayPal Gateway Settings")
-		self.assertEqual(gateway.capabilities, [REUSABLE_CHECKOUT])
+		self.assertTrue(gateway.reusable_checkout)
