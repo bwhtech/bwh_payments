@@ -30,6 +30,10 @@ class LivePayUClient(BasePayUClient):
 		# The refund sits under its request id twice.
 		return PayURefund.model_validate(get_details(response, request_id).get(request_id) or {})
 
+	def list_refunds(self, mihpayid: str) -> list[PayURefund]:
+		response = self.post_command("check_action_status", mihpayid, "payuid")
+		return [PayURefund.model_validate(action) for action in get_details(response, mihpayid).values()]
+
 	def post_command(self, command: str, *variables: str) -> dict:
 		# Only var1 is hashed: sha512(key|command|var1|salt).
 		data = {

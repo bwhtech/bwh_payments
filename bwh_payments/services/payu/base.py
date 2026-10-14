@@ -24,6 +24,8 @@ class PayURefund(GatewayModel):
 	# Major units.
 	amt: str | None = None
 	mihpayid: str | None = None
+	# PayU logs the capture as an action too: only `refund` is a refund.
+	action: str | None = None
 
 
 class BasePayUClient(ABC):
@@ -39,3 +41,7 @@ class BasePayUClient(ABC):
 
 	@abstractmethod
 	def get_refund(self, request_id: str) -> PayURefund: ...
+
+	@abstractmethod
+	def list_refunds(self, mihpayid: str) -> list[PayURefund]:
+		"""Every action PayU holds for a payment, its capture included."""

@@ -17,7 +17,7 @@ from werkzeug.wrappers import Response
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
 from bwh_payments.bwh_payments.utils import add_reference_id, supports_currency
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
-from bwh_payments.services.payu.base import BasePayUClient, payu_hash
+from bwh_payments.services.payu.base import BasePayUClient, PayURefund, payu_hash
 from bwh_payments.services.payu.live import LivePayUClient
 from bwh_payments.services.payu.stub import StubPayUClient
 
@@ -174,9 +174,12 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 			parts.insert(0, data["additionalCharges"])
 		return payu_hash(*parts)
 
-	def read_refund_event(self, request_id: str, announced_status: str) -> WebhookEvent:
+	def read_refund_event(self, request_id: str, announced_status: str) -> WebhookEvent | None:
 		# PayU does not sign refund webhooks, so the body only names the refund; PayU is asked for the rest.
 		refund = self.get_client().get_refund(request_id)
+		# Capture actions share the refund ids' sequence, so a guessed id must not read as a refund.
+		if not is_refund(refund):
+			return None
 		status = read_refund_status(refund.status)
 		# A 200 ends PayU's deliveries, so a settled refund its API does not show yet must be retried.
 		if status == "pending" and announced_status != "pending":
@@ -188,6 +191,18 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 			transaction_ref=refund.mihpayid,
 			event_id=f"{request_id}:{status}",
 		)
+
+	def list_refunds(self, session_id: str) -> list[RefundResult]:
+		mihpayid = self.get_transaction_ref(session_id)
+		if not mihpayid:
+			return []
+		return [
+			RefundResult(
+				refund_id=refund.request_id, status=read_refund_status(refund.status), amount=flt(refund.amt)
+			)
+			for refund in self.get_client().list_refunds(mihpayid)
+			if is_refund(refund)
+		]
 
 	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult:
 		refund = self.get_client().get_refund(refund_id)
@@ -210,6 +225,10 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 
 def read_status(status: str | None) -> str:
 	return (status or "").strip().casefold()
+
+
+def is_refund(refund: PayURefund) -> bool:
+	return read_status(refund.action) == "refund"
 
 
 def read_refund_status(status: str | None) -> str:

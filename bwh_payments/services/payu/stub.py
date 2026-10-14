@@ -37,13 +37,20 @@ class StubPayUClient(BasePayUClient):
 
 	@classmethod
 	def pay(cls, txnid: str) -> str:
-		"""Capture the payment and return its mihpayid."""
-		return cls.set_status(txnid, "captured")
+		"""Capture the payment and return its mihpayid. PayU also logs the capture as an action."""
+		mihpayid = cls.set_status(txnid, "captured")
+		capture = PayURefund(
+			request_id=new_request_id(), status="SUCCESS", mihpayid=mihpayid, action="capture"
+		)
+		cls.refunds[capture.request_id] = capture
+		return mihpayid
 
 	@classmethod
 	def add_refund(cls, request_id: str, status: str, mihpayid: str, amt: str | None = None):
 		"""A refund raised outside this app, e.g. from the PayU dashboard."""
-		cls.refunds[request_id] = PayURefund(request_id=request_id, status=status, amt=amt, mihpayid=mihpayid)
+		cls.refunds[request_id] = PayURefund(
+			request_id=request_id, status=status, amt=amt, mihpayid=mihpayid, action="refund"
+		)
 
 	@classmethod
 	def set_refund_status(cls, request_id: str, status: str):
@@ -67,7 +74,7 @@ class StubPayUClient(BasePayUClient):
 			frappe.throw(_("PayU rejected the request: {0}").format("invalid mihpayid"))
 
 		refund = PayURefund(
-			request_id=str(random.randrange(10**10, 10**11)), status="queued", amt=amount, mihpayid=mihpayid
+			request_id=new_request_id(), status="queued", amt=amount, mihpayid=mihpayid, action="refund"
 		)
 		self.refunds[refund.request_id] = refund
 		return refund.model_copy()
@@ -76,6 +83,16 @@ class StubPayUClient(BasePayUClient):
 		if request_id not in self.refunds:
 			frappe.throw(_("PayU rejected the request: {0}").format("No action status found"))
 		return self.refunds[request_id].model_copy()
+
+	def list_refunds(self, mihpayid: str) -> list[PayURefund]:
+		if not any(transaction.mihpayid == mihpayid for transaction in self.transactions.values()):
+			frappe.throw(_("PayU rejected the request: {0}").format("transaction does not exists"))
+		return [refund.model_copy() for refund in self.refunds.values() if refund.mihpayid == mihpayid]
+
+
+def new_request_id() -> str:
+	# PayU's request ids are sequential numbers, which is why an unsigned webhook can guess them.
+	return str(random.randrange(10**10, 10**11))
 
 
 def build_payment_event(

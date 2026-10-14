@@ -293,6 +293,25 @@ class GatewayPaymentRequest(Document):
 			if result:
 				refund.apply_gateway_status(RefundResult.model_validate(result).status)
 
+		self.record_unknown_refunds(settings)
+
+	def record_unknown_refunds(self, settings):
+		"""Record refunds raised outside this app whose webhook never arrived."""
+		# One of our refunds still waiting for its id may be among them; recording it now would count it twice.
+		if frappe.db.exists(
+			"Gateway Refund",
+			{"payment_request": self.name, "refund_id": ["is", "not set"], "status": "Pending"},
+		):
+			return
+
+		known = set(frappe.get_all("Gateway Refund", {"payment_request": self.name}, pluck="refund_id"))
+		for result in settings.list_refunds(self.order_ref) or []:
+			result = RefundResult.model_validate(result)
+			if result.refund_id and result.refund_id not in known:
+				self.record_external_refund(result.refund_id, result.amount).apply_gateway_status(
+					result.status
+				)
+
 	def record_external_refund(self, refund_id: str, amount: float):
 		"""Record a refund raised outside this app, e.g. from the gateway's dashboard."""
 		return frappe.get_doc(

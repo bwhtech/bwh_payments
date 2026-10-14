@@ -401,6 +401,12 @@ class TestPayUWebhook(PayUTestCase):
 
 		self.assertEqual(self.handle(body, "application/json").refund_id, refund.refund_id)
 
+	def test_a_refund_event_naming_the_capture_is_ignored(self):
+		payment_request = self.make_paid_request()
+		[capture] = [refund for refund in StubPayUClient.refunds.values() if refund.action == "capture"]
+
+		self.assertIsNone(self.handle(build_refund_event(capture.request_id), "application/json"))
+
 	def test_a_refund_event_for_an_unknown_request_id_is_rejected(self):
 		with self.assertRaises(frappe.ValidationError):
 			self.handle(json.dumps({"request_id": "never_issued", "status": "success"}).encode())
@@ -425,6 +431,43 @@ class TestPayURefunds(PayUTestCase):
 		self.assertEqual(refund.status, "Processed")
 		self.assertEqual(flt(payment_request.refund_amount), 40)
 		self.assertEqual(payment_request.status, "Partially Refunded")
+
+	def test_a_sync_records_a_refund_made_on_the_payu_dashboard(self):
+		payment_request = self.make_paid_request()
+		StubPayUClient.add_refund(
+			"rfnd_dashboard", "SUCCESS", payment_request.gateway_transaction_ref, "25.00"
+		)
+
+		payment_request.sync_refunds()
+
+		payment_request.reload()
+		self.assertEqual(
+			frappe.get_all(
+				"Gateway Refund", {"payment_request": payment_request.name}, ["refund_id", "status", "amount"]
+			),
+			[{"refund_id": "rfnd_dashboard", "status": "Processed", "amount": 25}],
+		)
+		self.assertEqual(payment_request.status, "Partially Refunded")
+
+	def test_a_sync_never_records_the_capture_as_a_refund(self):
+		payment_request = self.make_paid_request()
+
+		payment_request.sync_refunds()
+
+		self.assertFalse(frappe.db.exists("Gateway Refund", {"payment_request": payment_request.name}))
+
+	def test_a_sync_leaves_strangers_alone_while_our_own_refund_is_in_flight(self):
+		payment_request = self.make_paid_request()
+		StubPayUClient.add_refund(
+			"rfnd_maybe_ours", "SUCCESS", payment_request.gateway_transaction_ref, "25.00"
+		)
+		frappe.get_doc(
+			{"doctype": "Gateway Refund", "payment_request": payment_request.name, "amount": 25}
+		).insert(ignore_permissions=True)
+
+		payment_request.sync_refunds()
+
+		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": "rfnd_maybe_ours"}))
 
 	def test_the_refund_status_map(self):
 		payment_request = self.make_paid_request()

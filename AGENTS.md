@@ -41,7 +41,8 @@ PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport
 `bwh_payments/base_class.py` defines `PaymentGatewayBase` (ABC): `create_session`, `get_payment_status`,
 `refund_payment`, `handle_webhook`. Optional methods have defaults, so a third-party gateway that skips them
 keeps working: `cancel_session` (False), `get_transaction_ref` (the settled payment's id; None),
-`get_refund_status` (None = cannot report), `supported_currencies` (None = any), and the `logo` /
+`get_refund_status` (None = cannot report), `list_refunds` (None = cannot list; `sync_refunds` records
+the unknown ones), `supported_currencies` (None = any), and the `logo` /
 `logo_dark` class attributes. `create_session` also takes an optional `return_url`, passed only when set.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
 carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`). Callers read them through
@@ -156,7 +157,10 @@ An insert that is already settled is an import and fires neither.
   signed form, and the txnid we generate is the `order_ref`. PayU returns the shopper by a cross-site POST,
   so surl/furl go through `return_from_payu`, which drops the `sid=Guest` cookies and redirects to the
   stored URL. Payment webhooks are checked with the reverse hash. Refund webhooks are unsigned, so the
-  refund is read back from PayU with `check_action_status`. INR only.
+  refund is read back from PayU with `check_action_status` and must be `action: refund`: PayU logs the
+  capture under the same sequential ids. `list_refunds` reads every action by PayU ID (`var2=payuid`).
+  PayU's replies arrive as JSON text, not a JSON content type. A failed attempt stays Pending, because
+  the shopper can retry on the same txnid. INR only.
 
 ### Money and currency rules
 
