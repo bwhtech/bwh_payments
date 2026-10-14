@@ -402,7 +402,7 @@ class TestPayUWebhook(PayUTestCase):
 		self.assertEqual(self.handle(body, "application/json").refund_id, refund.refund_id)
 
 	def test_a_refund_event_naming_the_capture_is_ignored(self):
-		payment_request = self.make_paid_request()
+		self.make_paid_request()
 		[capture] = [refund for refund in StubPayUClient.refunds.values() if refund.action == "capture"]
 
 		self.assertIsNone(self.handle(build_refund_event(capture.request_id), "application/json"))
