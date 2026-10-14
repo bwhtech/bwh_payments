@@ -3,7 +3,6 @@
 
 import hashlib
 import hmac
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
@@ -12,7 +11,7 @@ from frappe.utils import validate_email_address
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
-from bwh_payments.bwh_payments.utils import get_localised_url
+from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
 from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
 from bwh_payments.services.razorpay.base import BaseRazorpayClient, RazorpayPaymentLink
 from bwh_payments.services.razorpay.live import LiveRazorpayClient
@@ -116,10 +115,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		"""Razorpay sends `razorpay_payment_link_reference_id`; the storefront reads `reference_id`."""
 		if not self.success_url:
 			frappe.throw(_("Please set the Success URL in Razorpay Gateway Settings"))
-		parts = urlsplit(get_localised_url(self.success_url))
-		query = parse_qsl(parts.query)
-		query.append(("reference_id", reference or ""))
-		return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+		return add_reference_id(self.success_url, reference)
 
 	def get_payment_status(self, session_id: str) -> str:
 		payment_link = self.get_client().get_payment_link(session_id)

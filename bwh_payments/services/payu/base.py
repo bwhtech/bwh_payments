@@ -1,8 +1,6 @@
 import hashlib
 from abc import ABC, abstractmethod
 
-from pydantic import AliasChoices, Field
-
 from bwh_payments.services import GatewayModel
 
 
@@ -23,8 +21,8 @@ class PayURefund(GatewayModel):
 	# Read after money moved, so every field is optional.
 	request_id: str | None = None
 	status: str | None = None
-	# Major units. The refund webhook says `amt`, `check_action_status` says `amount`.
-	amt: str | None = Field(default=None, validation_alias=AliasChoices("amt", "amount"))
+	# Major units.
+	amt: str | None = None
 	mihpayid: str | None = None
 
 

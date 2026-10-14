@@ -3,7 +3,6 @@
 
 import hashlib
 import hmac
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
@@ -11,7 +10,7 @@ from frappe.model.document import Document
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
-from bwh_payments.bwh_payments.utils import get_localised_url
+from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 from bwh_payments.services.tabby.base import BaseTabbyClient, TabbyCheckout, TabbyConfiguration, TabbyPayment
 from bwh_payments.services.tabby.live import LiveTabbyClient
@@ -126,10 +125,7 @@ class TabbyGatewaySettings(Document, PaymentGatewayBase):
 		"""Tabby only appends `?payment_id=...` on return, so add our request name."""
 		if not url:
 			frappe.throw(_("Please set the {0} in Tabby Gateway Settings").format(label))
-		parts = urlsplit(get_localised_url(url))
-		query = parse_qsl(parts.query)
-		query.append(("reference_id", reference or ""))
-		return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+		return add_reference_id(url, reference)
 
 	def get_payment_status(self, session_id: str) -> str:
 		client = self.get_client()

@@ -1,7 +1,6 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # For license information, please see license.txt
 
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
@@ -9,7 +8,7 @@ from frappe.model.document import Document
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult
-from bwh_payments.bwh_payments.utils import get_localised_url
+from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 from bwh_payments.services.telr.base import BaseTelrClient
 from bwh_payments.services.telr.live import LiveTelrClient
@@ -106,10 +105,7 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		"""Telr does not echo its order ref, so add our request name."""
 		if not url:
 			frappe.throw(_("Please set the Authorised URL in Telr Gateway Settings"))
-		parts = urlsplit(get_localised_url(url))
-		query = parse_qsl(parts.query)
-		query.append(("reference_id", reference or ""))
-		return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+		return add_reference_id(url, reference)
 
 	def get_payment_status(self, session_id: str) -> str:
 		order = self.get_client().check_order(session_id)

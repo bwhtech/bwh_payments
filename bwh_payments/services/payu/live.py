@@ -24,10 +24,9 @@ class LivePayUClient(BasePayUClient):
 		return PayURefund.model_validate({"mihpayid": mihpayid, "amt": amount, **response})
 
 	def get_refund(self, request_id: str) -> PayURefund:
-		details = get_details(self.post_command("check_action_status", request_id), request_id)
-		# Read the entry flat, or nested a second time under its request id.
-		details = details.get(request_id) or details
-		return PayURefund.model_validate({"request_id": request_id, **details})
+		response = self.post_command("check_action_status", request_id)
+		# The refund sits under its request id twice.
+		return PayURefund.model_validate(get_details(response, request_id).get(request_id) or {})
 
 	def post_command(self, command: str, *variables: str) -> dict:
 		# Only var1 is hashed: sha512(key|command|var1|salt).
@@ -48,8 +47,8 @@ class LivePayUClient(BasePayUClient):
 			log_request(command, error="PayU returned a non-JSON body")
 			frappe.throw(_("PayU returned an unreadable response"))
 
-		# verify_payment answers status 0 for an unknown txnid but still carries its details.
-		if str(response.get("status")) == "0" and not response.get("transaction_details"):
+		# verify_payment answers status 0 for an unknown txnid, which only means not paid yet.
+		if str(response.get("status")) == "0" and command != "verify_payment":
 			log_request(command, error=response.get("msg"))
 			frappe.throw(_("PayU rejected the request: {0}").format(response.get("msg")))
 

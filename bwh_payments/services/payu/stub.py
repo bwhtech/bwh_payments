@@ -8,8 +8,6 @@ from frappe import _
 
 from bwh_payments.services.payu.base import BasePayUClient, PayURefund, PayUTransaction
 
-PAYU_NOT_FOUND = "Not Found"
-
 
 class StubPayUClient(BasePayUClient):
 	"""In-memory PayU for tests. Call reset() in setUp."""
@@ -51,7 +49,7 @@ class StubPayUClient(BasePayUClient):
 
 	def verify_payment(self, txnid: str) -> PayUTransaction:
 		if txnid not in self.transactions:
-			return PayUTransaction(mihpayid=PAYU_NOT_FOUND, status=PAYU_NOT_FOUND)
+			return PayUTransaction(mihpayid="Not Found", status="Not Found")
 		return self.transactions[txnid].model_copy()
 
 	def refund(self, mihpayid: str, token: str, amount: str) -> PayURefund:

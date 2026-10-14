@@ -4,7 +4,7 @@
 import hmac
 import json
 from html import escape
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl
 
 import frappe
 from frappe import _
@@ -15,7 +15,7 @@ from frappe.utils.data import flt
 from werkzeug.wrappers import Response
 
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
-from bwh_payments.bwh_payments.utils import get_localised_url
+from bwh_payments.bwh_payments.utils import add_reference_id
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 from bwh_payments.services.payu.base import BasePayUClient, payu_hash
 from bwh_payments.services.payu.live import LivePayUClient
@@ -99,18 +99,10 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 		return CheckoutSession(
 			session_id=frappe.generate_hash(length=20),
 			redirect_url=get_url(f"{ENDPOINT}.start_checkout?request={reference}"),
-			success_url=return_url or self.build_return_url(self.success_url, reference),
-			failure_url=return_url or self.build_return_url(self.failure_url, reference),
-			cancel_url=return_url or self.build_return_url(self.cancelled_url, reference),
+			success_url=return_url or add_reference_id(self.success_url, reference),
+			failure_url=return_url or add_reference_id(self.failure_url, reference),
+			cancel_url=return_url or (self.cancelled_url and add_reference_id(self.cancelled_url, reference)),
 		)
-
-	def build_return_url(self, url: str | None, reference: str | None) -> str | None:
-		if not url:
-			return None
-		parts = urlsplit(get_localised_url(url))
-		query = parse_qsl(parts.query)
-		query.append(("reference_id", reference or ""))
-		return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 	def build_checkout_form(self, payment_request) -> tuple[str, dict]:
 		"""The action URL and fields of the form that sends the shopper to PayU."""
