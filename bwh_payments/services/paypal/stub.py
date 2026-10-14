@@ -4,6 +4,7 @@ from typing import ClassVar
 import frappe
 from frappe import _
 
+from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.paypal.base import (
 	BasePayPalClient,
 	PayPalAmount,
@@ -40,6 +41,10 @@ class StubPayPalClient(BasePayPalClient):
 	next_verification_status: ClassVar[str] = "SUCCESS"
 	# An issue code such as "INSTRUMENT_DECLINED" makes the next capture fail with it.
 	next_capture_issue: ClassVar[str | None] = None
+	# PENDING stands in for an eCheck or a payment PayPal holds for review.
+	next_capture_status: ClassVar[str] = "COMPLETED"
+	# The next capture gets a 5xx or a dropped connection.
+	capture_unavailable: ClassVar[bool] = False
 	# Another call (the return page or the webhook) captures between our read and our capture.
 	lose_next_capture_race: ClassVar[bool] = False
 
@@ -54,6 +59,8 @@ class StubPayPalClient(BasePayPalClient):
 		cls.next_refund_status = "COMPLETED"
 		cls.next_verification_status = "SUCCESS"
 		cls.next_capture_issue = None
+		cls.next_capture_status = "COMPLETED"
+		cls.capture_unavailable = False
 		cls.lose_next_capture_race = False
 
 	@classmethod
@@ -121,11 +128,15 @@ class StubPayPalClient(BasePayPalClient):
 				_("PayPal rejected the request: {0}").format("Order already captured."),
 				exc=PayPalOrderAlreadyCapturedError,
 			)
+		if self.capture_unavailable:
+			StubPayPalClient.capture_unavailable = False
+			frappe.throw(_("PayPal rejected the request: {0}").format("503"), exc=GatewayUnavailableError)
 		if issue := self.next_capture_issue:
 			frappe.throw(_("PayPal rejected the request: {0}").format(issue))
 
 		self.captured_orders.append(order_id)
-		self.pay(order_id)
+		self.set_status(order_id, "COMPLETED")
+		self.add_capture(order_id, self.next_capture_status)
 		return self.get_order(order_id)
 
 	def refund_capture(self, capture_id: str, payload: dict) -> PayPalRefund:

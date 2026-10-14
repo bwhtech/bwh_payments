@@ -5,6 +5,7 @@ from frappe.rate_limiter import rate_limit
 
 from bwh_payments.base_class import WebhookEvent
 from bwh_payments.bwh_payments.utils import run_as_administrator
+from bwh_payments.services import GatewayUnavailableError
 
 WEBHOOK_ACCEPTED = {"status": "ok"}
 WEBHOOK_SAVEPOINT = "bwh_payments_webhook"
@@ -110,6 +111,12 @@ def process_webhook(integration_request: str):
 		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		# Frappe's job runner retries only RetryBackgroundJobError, not the DB errors it wraps.
 		raise frappe.RetryBackgroundJobError from error
+	except GatewayUnavailableError as error:
+		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
+		# Failed and committed first, so it stays retryable by hand once Frappe's own retries run out.
+		log.handle_failure({"error": repr(error)})
+		frappe.db.commit()  # nosemgrep
+		raise frappe.RetryBackgroundJobError from error
 	except Exception as error:
 		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		frappe.log_error(title=f"{log.integration_request_service} could not be applied")
@@ -136,9 +143,7 @@ def apply_event_as_administrator(payment_request, event: WebhookEvent):
 		if event.refund_id:
 			apply_refund_event(payment_request, event)
 		elif event.sync_status:
-			# Checked first: the sync asks the gateway, and that may capture.
-			if payment_request.status == "Pending":
-				payment_request.sync_status()
+			payment_request.sync_status()
 		else:
 			payment_request.apply_webhook_status(event.status, event.event_id)
 

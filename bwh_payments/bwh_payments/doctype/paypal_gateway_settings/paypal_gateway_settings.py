@@ -64,10 +64,13 @@ PAYPAL_ACCEPTED_REFUND_STATUSES = ("COMPLETED", "PENDING")
 PAYPAL_REFUNDABLE_CAPTURE_STATUSES = ("COMPLETED", "PARTIALLY_REFUNDED")
 # A fully refunded capture is still the payment that settled.
 PAYPAL_SETTLED_CAPTURE_STATUSES = (*PAYPAL_REFUNDABLE_CAPTURE_STATUSES, "REFUNDED")
+PAYPAL_REFUSED_CAPTURE_STATUSES = ("DECLINED", "FAILED")
 PAYPAL_VERIFICATION_SUCCESS = "SUCCESS"
 
 PAYPAL_ORDER_APPROVED_EVENT = "CHECKOUT.ORDER.APPROVED"
 PAYPAL_CAPTURE_COMPLETED_EVENT = "PAYMENT.CAPTURE.COMPLETED"
+# A pending capture (eCheck, PayPal review) that PayPal later refused.
+PAYPAL_CAPTURE_DENIED_EVENT = "PAYMENT.CAPTURE.DENIED"
 # Each carries the refund as its resource. PAYMENT.CAPTURE.REVERSED (a dispute or chargeback) is left
 # out: PayPal can reinstate the money later, sends no webhook for that, and a settled refund never changes.
 PAYPAL_REFUND_EVENTS = (
@@ -193,7 +196,8 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 		if read_status(order) == PAYPAL_APPROVED_STATUS:
 			order = self.capture_order(session_id)
 
-		return PAYPAL_STATUS_MAP.get(read_status(order), "Pending")
+		status = PAYPAL_STATUS_MAP.get(read_status(order), "Pending")
+		return read_capture_status(order) if status == "Paid" else status
 
 	def capture_order(self, session_id: str) -> PayPalOrder:
 		"""Approval is not payment: without a capture the order sits approved and no money arrives."""
@@ -215,7 +219,7 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 			return read_refund_event(event)
 		if event_type == PAYPAL_ORDER_APPROVED_EVENT:
 			session_id = resource.get("id")
-		elif event_type == PAYPAL_CAPTURE_COMPLETED_EVENT:
+		elif event_type in (PAYPAL_CAPTURE_COMPLETED_EVENT, PAYPAL_CAPTURE_DENIED_EVENT):
 			# `resource.id` is the capture; the order id is only in supplementary data.
 			related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
 			session_id = related_ids.get("order_id")
@@ -224,13 +228,12 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 
 		if not session_id:
 			frappe.throw(_("PayPal sent a {0} event with no order id").format(event_type))
-		# An approved order is not paid until captured, and the capture belongs to the status sync.
-		approved = event_type == PAYPAL_ORDER_APPROVED_EVENT
+		if event_type == PAYPAL_CAPTURE_COMPLETED_EVENT:
+			return WebhookEvent(session_id=session_id, status="Paid", event_id=event.get("id"))
+		# An approved order still needs its capture, and a denied capture is read back from the order:
+		# both belong to the status sync.
 		return WebhookEvent(
-			session_id=session_id,
-			status="Pending" if approved else "Paid",
-			sync_status=approved,
-			event_id=event.get("id"),
+			session_id=session_id, status="Pending", sync_status=True, event_id=event.get("id")
 		)
 
 	def verify_webhook(self, payload: bytes, headers: dict) -> dict:
@@ -341,6 +344,15 @@ def get_redirect_url(order: PayPalOrder) -> str:
 			return link.href
 
 	frappe.throw(_("PayPal created an order with no approval link"))
+
+
+def read_capture_status(order: PayPalOrder) -> str:
+	"""PayPal completes an order once captured, even while the capture waits for an eCheck or review."""
+	if find_capture_id(order, PAYPAL_SETTLED_CAPTURE_STATUSES):
+		return "Paid"
+	if find_capture_id(order, PAYPAL_REFUSED_CAPTURE_STATUSES):
+		return "Not Paid"
+	return "Pending"
 
 
 def get_completed_capture_id(order: PayPalOrder) -> str:

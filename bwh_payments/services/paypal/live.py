@@ -5,7 +5,9 @@ import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
 from frappe.utils.data import cint
+from requests import RequestException
 
+from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.paypal.base import (
 	BasePayPalClient,
 	PayPalOrder,
@@ -113,9 +115,12 @@ def throw_request_error(url: str, exception: Exception) -> NoReturn:
 	description = detail.get("description") or body.get("message") or body.get("name")
 	log_request(url, error=description or exception)
 	issue = (detail.get("issue") or "").strip().upper()
-	exc = (
-		PayPalOrderAlreadyCapturedError if issue == PAYPAL_ALREADY_CAPTURED_ISSUE else frappe.ValidationError
-	)
+	if issue == PAYPAL_ALREADY_CAPTURED_ISSUE:
+		exc = PayPalOrderAlreadyCapturedError
+	elif is_transient_error(exception):
+		exc = GatewayUnavailableError
+	else:
+		exc = frappe.ValidationError
 	frappe.throw(_("PayPal rejected the request: {0}").format(description or _("unknown error")), exc=exc)
 
 
@@ -140,6 +145,13 @@ def log_request(url: str, output=None, error=None):
 		error=error,
 		status="Failed" if error else "Completed",
 	)
+
+
+def is_transient_error(exception: Exception) -> bool:
+	response = getattr(exception, "response", None)
+	if response is None:
+		return isinstance(exception, RequestException)
+	return response.status_code >= 500 or response.status_code == 429
 
 
 def read_paypal_error_body(exception: Exception) -> dict | None:

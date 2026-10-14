@@ -179,7 +179,6 @@ class TestPayPalGatewaySettings(PayPalTestCase):
 	def test_status_map_covers_the_terminal_states(self):
 		settings = self.get_settings()
 		for paypal_status, expected in (
-			("COMPLETED", "Paid"),
 			("VOIDED", "Cancelled"),
 			("CREATED", "Pending"),
 			("PAYER_ACTION_REQUIRED", "Pending"),
@@ -187,6 +186,39 @@ class TestPayPalGatewaySettings(PayPalTestCase):
 			with self.subTest(paypal_status=paypal_status):
 				order_id = StubPayPalClient.add_order(status=paypal_status)
 				self.assertEqual(settings.get_payment_status(order_id), expected)
+
+	def test_a_completed_order_is_paid_only_once_its_capture_settles(self):
+		settings = self.get_settings()
+		for capture_status, expected in (
+			("COMPLETED", "Paid"),
+			("PENDING", "Pending"),
+			("DECLINED", "Not Paid"),
+			("FAILED", "Not Paid"),
+		):
+			with self.subTest(capture_status=capture_status):
+				order_id = StubPayPalClient.add_order(status="COMPLETED")
+				StubPayPalClient.add_capture(order_id, status=capture_status)
+				self.assertEqual(settings.get_payment_status(order_id), expected)
+
+	def test_a_capture_held_for_review_leaves_the_request_pending(self):
+		payment_request = make_paypal_payment_request(20, "USD")
+		StubPayPalClient.approve(payment_request.order_ref)
+		StubPayPalClient.next_capture_status = "PENDING"
+
+		payment_request.sync_status()
+
+		self.assertEqual(StubPayPalClient.captured_orders, [payment_request.order_ref])
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Pending")
+
+	def test_a_closed_request_never_asks_paypal_and_so_never_captures(self):
+		payment_request = make_paypal_payment_request(20, "USD")
+		payment_request.db_set("status", "Cancelled")
+		StubPayPalClient.approve(payment_request.order_ref)
+
+		payment_request.sync_status()
+
+		self.assertEqual(StubPayPalClient.captured_orders, [])
 
 	def test_an_unmapped_status_stays_pending(self):
 		settings = self.get_settings()

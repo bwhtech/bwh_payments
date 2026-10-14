@@ -112,6 +112,46 @@ class TestPayPalWebhookSpine(PayPalWebhookTestCase):
 		payment_request.reload()
 		self.assertEqual(payment_request.status, "Paid")
 
+	def test_a_capture_paypal_could_not_answer_is_retried(self):
+		payment_request = make_paypal_payment_request(100, "USD")
+		StubPayPalClient.approve(payment_request.order_ref)
+		StubPayPalClient.capture_unavailable = True
+
+		# Raised for Frappe's job runner, which retries it; in tests the job runs inline.
+		with self.assertRaises(frappe.RetryBackgroundJobError):
+			self.post_webhook(build_order_approved_event(payment_request.order_ref, event_id="WH-503-0001"))
+
+		log = frappe.get_doc("Integration Request", {"request_id": "WH-503-0001"})
+		self.assertEqual(log.status, "Failed")
+		webhook.process_webhook(log.name)
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_pending_capture_is_paid_when_paypal_completes_it(self):
+		payment_request = make_paypal_payment_request(100, "USD")
+		StubPayPalClient.approve(payment_request.order_ref)
+		StubPayPalClient.next_capture_status = "PENDING"
+		payment_request.sync_status()
+
+		self.post_webhook(build_capture_completed_event(payment_request.order_ref, event_id="WH-HELD-0001"))
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_denied_capture_marks_the_request_not_paid(self):
+		payment_request = make_paypal_payment_request(100, "USD")
+		StubPayPalClient.set_status(payment_request.order_ref, "COMPLETED")
+		StubPayPalClient.add_capture(payment_request.order_ref, status="DECLINED")
+		payload = build_capture_completed_event(payment_request.order_ref, event_id="WH-DENIED-0001").replace(
+			b"PAYMENT.CAPTURE.COMPLETED", b"PAYMENT.CAPTURE.DENIED"
+		)
+
+		self.post_webhook(payload)
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Not Paid")
+
 	def test_a_delivery_paypal_will_not_verify_is_rejected(self):
 		payment_request = make_paypal_payment_request(100, "USD")
 		payload = build_capture_completed_event(payment_request.order_ref)
