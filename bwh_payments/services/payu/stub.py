@@ -74,7 +74,7 @@ class StubPayUClient(BasePayUClient):
 
 	def get_refund(self, request_id: str) -> PayURefund:
 		if request_id not in self.refunds:
-			frappe.throw(_("PayU rejected the request: {0}").format("invalid request id"))
+			frappe.throw(_("PayU rejected the request: {0}").format("No action status found"))
 		return self.refunds[request_id].model_copy()
 
 

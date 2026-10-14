@@ -57,8 +57,11 @@ class LivePayUClient(BasePayUClient):
 
 		# verify_payment answers status 0 for an unknown txnid, which only means not paid yet.
 		if str(response.get("status")) == "0" and command != "verify_payment":
-			log_request(command, error=response.get("msg"))
-			frappe.throw(_("PayU rejected the request: {0}").format(response.get("msg")))
+			# check_action_status puts the real reason ("No action status found") in place of the details.
+			details = list((response.get("transaction_details") or {}).values())
+			reason = details[0] if details and isinstance(details[0], str) else response.get("msg")
+			log_request(command, error=reason)
+			frappe.throw(_("PayU rejected the request: {0}").format(reason))
 
 		log_request(command, output={"status": response.get("status"), "msg": response.get("msg")})
 		return response
