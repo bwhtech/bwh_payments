@@ -18,6 +18,7 @@ from bwh_payments.api import (
 	validate_currency,
 )
 from bwh_payments.base_class import PaymentGatewayBase
+from bwh_payments.bwh_payments import utils
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RAZORPAY_GATEWAY,
 	RazorpayTestCase,
@@ -93,6 +94,20 @@ class TestGateways(IntegrationTestCase):
 
 		self.assertTrue({"Razorpay", "Stripe", "Tabby", "Telr"} <= set(names))
 		self.assertEqual(names, sorted(names, key=str.casefold))
+
+	def test_a_gateway_whose_code_is_missing_is_skipped(self):
+		get_controller = utils.get_controller
+
+		def get_controller_without_stripe(doctype: str):
+			if doctype == "Stripe Gateway Settings":
+				raise ImportError("No module named stripe_gateway_settings")
+			return get_controller(doctype)
+
+		with patch.object(utils, "get_controller", side_effect=get_controller_without_stripe):
+			names = [gateway.name for gateway in get_gateways()]
+
+		self.assertNotIn("Stripe", names)
+		self.assertIn("Razorpay", names)
 
 	def test_each_gateway_names_the_settings_behind_it(self):
 		for gateway in get_gateways():

@@ -52,7 +52,18 @@ def get_gateway_settings_doctypes() -> list[str]:
 	doctypes = frappe.get_all(
 		"DocType", filters={"issingle": 1, "name": ("like", "% Gateway Settings")}, pluck="name"
 	)
-	return [doctype for doctype in doctypes if issubclass(get_controller(doctype), PaymentGatewayBase)]
+	return [doctype for doctype in doctypes if is_gateway_settings(doctype)]
+
+
+def is_gateway_settings(doctype: str) -> bool:
+	try:
+		controller = get_controller(doctype)
+	except ImportError:
+		# A DocType whose app was removed, or whose code is on another branch, must not break every
+		# screen that lists gateways. Logged to the file log: this runs on every checkout.
+		frappe.logger("bwh_payments").warning(f"Skipped {doctype}: its controller could not be imported")
+		return False
+	return issubclass(controller, PaymentGatewayBase)
 
 
 def supports_currency(settings, currency: str) -> bool:
