@@ -5,7 +5,9 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from bwh_payments.api import get_gateways
+from bwh_payments.bwh_payments.doctype.gateway_refund.gateway_refund import normalise_refund_status
 from bwh_payments.bwh_payments.doctype.paypal_gateway_settings import paypal_gateway_settings
+from bwh_payments.services.paypal.base import PayPalRefund
 from bwh_payments.services.paypal.stub import StubPayPalClient
 
 PAYPAL_GATEWAY = "PayPal"
@@ -300,6 +302,11 @@ class TestPayPalGatewaySettings(PayPalTestCase):
 
 		StubPayPalClient.set_refund_status(result.refund_id, "COMPLETED")
 		self.assertEqual(settings.get_refund_status(order_id, result.refund_id).status, "processed")
+
+	def test_a_refund_with_no_status_stays_pending(self):
+		status = paypal_gateway_settings.read_refund_status(PayPalRefund(id="REFUNDNOSTATUS"))
+
+		self.assertEqual(normalise_refund_status(status), "Pending")
 
 	def test_a_refund_through_the_request_is_recorded_as_processed(self):
 		payment_request = make_paypal_payment_request(20, "USD")

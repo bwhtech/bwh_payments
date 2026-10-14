@@ -9,7 +9,7 @@ from frappe.model.document import Document
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
-from bwh_payments.bwh_payments.utils import get_localised_url, run_as_administrator, supports_currency
+from bwh_payments.bwh_payments.utils import get_localised_url, supports_currency
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 from bwh_payments.services.paypal.base import (
 	BasePayPalClient,
@@ -68,10 +68,10 @@ PAYPAL_VERIFICATION_SUCCESS = "SUCCESS"
 
 PAYPAL_ORDER_APPROVED_EVENT = "CHECKOUT.ORDER.APPROVED"
 PAYPAL_CAPTURE_COMPLETED_EVENT = "PAYMENT.CAPTURE.COMPLETED"
-# Each carries the refund as its resource. REVERSED is PayPal taking the money back, e.g. a chargeback.
+# Each carries the refund as its resource. PAYMENT.CAPTURE.REVERSED (a dispute or chargeback) is left
+# out: PayPal can reinstate the money later, sends no webhook for that, and a settled refund never changes.
 PAYPAL_REFUND_EVENTS = (
 	"PAYMENT.CAPTURE.REFUNDED",
-	"PAYMENT.CAPTURE.REVERSED",
 	"PAYMENT.REFUND.PENDING",
 	"PAYMENT.REFUND.FAILED",
 )
@@ -211,21 +211,27 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 		event_type = (event.get("event_type") or "").strip().upper()
 		resource = event.get("resource") or {}
 
-		if event_type == PAYPAL_ORDER_APPROVED_EVENT:
-			if not resource.get("id"):
-				frappe.throw(_("PayPal sent a {0} event with no order id").format(event_type))
-			enqueue_capture(resource["id"])
-			return None
 		if event_type in PAYPAL_REFUND_EVENTS:
 			return read_refund_event(event)
-		if event_type != PAYPAL_CAPTURE_COMPLETED_EVENT:
+		if event_type == PAYPAL_ORDER_APPROVED_EVENT:
+			session_id = resource.get("id")
+		elif event_type == PAYPAL_CAPTURE_COMPLETED_EVENT:
+			# `resource.id` is the capture; the order id is only in supplementary data.
+			related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+			session_id = related_ids.get("order_id")
+		else:
 			return None
 
-		# `resource.id` is the capture; the order id is only in supplementary data.
-		related_ids = (resource.get("supplementary_data") or {}).get("related_ids") or {}
-		if not related_ids.get("order_id"):
+		if not session_id:
 			frappe.throw(_("PayPal sent a {0} event with no order id").format(event_type))
-		return WebhookEvent(session_id=related_ids["order_id"], status="Paid", event_id=event.get("id"))
+		# An approved order is not paid until captured, and the capture belongs to the status sync.
+		approved = event_type == PAYPAL_ORDER_APPROVED_EVENT
+		return WebhookEvent(
+			session_id=session_id,
+			status="Pending" if approved else "Paid",
+			sync_status=approved,
+			event_id=event.get("id"),
+		)
 
 	def verify_webhook(self, payload: bytes, headers: dict) -> dict:
 		"""PayPal signs with a certificate, so we ask PayPal to verify the delivery with our webhook id.
@@ -291,25 +297,6 @@ class PayPalGatewaySettings(Document, PaymentGatewayBase):
 	def get_transaction_ref(self, session_id: str) -> str | None:
 		"""The capture that collected the money: refunds go against it, not the order."""
 		return find_capture_id(self.get_client().get_order(session_id), PAYPAL_SETTLED_CAPTURE_STATUSES)
-
-
-def enqueue_capture(session_id: str):
-	"""Capture moves money, so a guest webhook never does it. Our own request's status sync does."""
-	if payment_request := frappe.db.get_value(
-		"Gateway Payment Request", {"order_ref": session_id, "status": "Pending"}, "name"
-	):
-		frappe.enqueue(
-			"bwh_payments.bwh_payments.doctype.paypal_gateway_settings.paypal_gateway_settings.sync_payment_request",
-			queue="short",
-			payment_request=payment_request,
-			now=frappe.in_test,
-		)
-
-
-def sync_payment_request(payment_request: str):
-	"""As Administrator, like the return page: a paid request settles its referenced document."""
-	with run_as_administrator():
-		frappe.get_doc("Gateway Payment Request", payment_request).sync_status()
 
 
 def read_refund_event(event: dict) -> WebhookEvent:
@@ -387,4 +374,5 @@ def get_refunded_capture_id(refund: PayPalRefund) -> str | None:
 
 def read_refund_status(refund: PayPalRefund) -> str | None:
 	# Gateway Refund reads pending, failed and cancelled as they are; only COMPLETED needs a word.
-	return "processed" if read_status(refund) == "COMPLETED" else refund.status
+	# No status is not a refund that went through, which is how Gateway Refund reads a blank.
+	return "processed" if read_status(refund) == "COMPLETED" else refund.status or "pending"

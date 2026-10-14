@@ -24,10 +24,15 @@ class RefundResult(GatewayResult):
 
 
 class WebhookEvent(GatewayResult):
-	"""A payment event carries `session_id`; a refund event carries `refund_id` instead."""
+	"""A payment event carries `session_id`; a refund event carries `refund_id` instead.
+
+	With `sync_status`, the request asks the gateway instead of applying `status`. A gateway whose
+	payment still needs a capture uses it, so money moves in our own status sync, never in a guest request.
+	"""
 
 	session_id: str | None = None
 	status: str
+	sync_status: bool = False
 	event_id: str | None = None
 	refund_id: str | None = None
 	# Major units. Needed to record a refund raised outside this app.

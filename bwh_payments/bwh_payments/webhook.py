@@ -135,6 +135,10 @@ def apply_event_as_administrator(payment_request, event: WebhookEvent):
 	with run_as_administrator():
 		if event.refund_id:
 			apply_refund_event(payment_request, event)
+		elif event.sync_status:
+			# Checked first: the sync asks the gateway, and that may capture.
+			if payment_request.status == "Pending":
+				payment_request.sync_status()
 		else:
 			payment_request.apply_webhook_status(event.status, event.event_id)
 

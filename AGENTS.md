@@ -45,7 +45,9 @@ keeps working: `cancel_session` (False), `get_transaction_ref` (the settled paym
 `logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
 the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
-carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`). Callers read them through
+carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`; a payment event
+with `sync_status` makes the request ask the gateway instead of applying `status`, for a gateway that still
+has to capture). Callers read them through
 `<Model>.model_validate`, so a third-party gateway that still returns dicts keeps working. Each gateway is a
 **Single DocType** `<Name> Gateway Settings` whose controller inherits `(Document, PaymentGatewayBase)` and
 holds the credentials (as `Password` fields, read with `get_password`).
@@ -121,7 +123,8 @@ An insert that is already settled is an import and fires neither.
    `Paid`, `gateway_transaction_ref` is read through `get_transaction_ref` (a failure never blocks it).
    - **Webhook**: `webhook.handle` (guest POST, `?gateway=<profile>`, rate-limited) verifies the delivery,
      logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
-     queues `process_webhook`. The job applies it as Administrator; a failure is rolled back to a
+     queues `process_webhook`. The job applies it as Administrator (a `sync_status` event runs
+     `sync_status` on a Pending request instead); a failure is rolled back to a
      savepoint, logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
      are raised as `RetryBackgroundJobError`, because Frappe's job runner does not retry the
      `QueryDeadlockError` / `QueryTimeoutError` it wraps them in.
@@ -155,17 +158,20 @@ An insert that is already settled is an import and fires neither.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
   `get_payment_status` also *captures* an authorised payment; that capture is where money is taken.
 - **PayPal**: raw HTTP (Orders v2) with a client-credentials token, cached per mode and client id.
-  Only `get_payment_status` captures an approved order. The `CHECKOUT.ORDER.APPROVED` webhook captures
-  nothing itself: it queues `sync_status` for our own Pending request with that `order_ref` and returns
-  `None`, so a guest request never moves money and an order that is not ours is never captured. When the
-  return page and that job race, the loser gets `ORDER_ALREADY_CAPTURED`
+  Only `get_payment_status` captures an approved order. The `CHECKOUT.ORDER.APPROVED` webhook returns a
+  `sync_status` event, so the capture runs in `process_webhook` for our own Pending request: a guest
+  request never moves money, an order that is not ours is never captured, and a failed capture is a Failed
+  Integration Request for `retry_webhook`. When the return page and that job race, the loser gets
+  `ORDER_ALREADY_CAPTURED`
   (`PayPalOrderAlreadyCapturedError`), which counts as paid. Webhooks are signed with a certificate, so
   verification is a call back to PayPal (`verify_webhook_signature`). It is the one verifier that goes
   through the client, by decision: checking PayPal's certificate chain locally is easy to get wrong. The
   stub's `next_verification_status` stands in for a forgery. `cancel_session` stays `False`: PayPal
   cannot cancel an unapproved order. Refunds report `processed` for PayPal's `COMPLETED` and PayPal's own
-  status otherwise. Refund events: `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED`,
-  `PAYMENT.REFUND.PENDING`, `PAYMENT.REFUND.FAILED`; the refund names its capture only in its `up` link.
+  status otherwise. Refund events: `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.REFUND.PENDING`,
+  `PAYMENT.REFUND.FAILED`; the refund names its capture only in its `up` link. `PAYMENT.CAPTURE.REVERSED`
+  (dispute or chargeback) is ignored on purpose: PayPal can reinstate the money with no webhook, and a
+  settled Gateway Refund never changes, so the merchant records a reversal once it stands.
   `get_transaction_ref` is the capture's id.
 
 ### Money and currency rules

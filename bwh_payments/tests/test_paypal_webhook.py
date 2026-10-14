@@ -81,14 +81,36 @@ class TestPayPalWebhookSpine(PayPalWebhookTestCase):
 		self.assertEqual(response["status"], "ok")
 		self.assertEqual(StubPayPalClient.captured_orders, [])
 
-	def test_an_approved_event_for_a_paid_request_captures_nothing(self):
+	def test_an_approved_order_is_not_captured_once_its_request_is_closed(self):
 		payment_request = make_paypal_payment_request(100, "USD")
-		StubPayPalClient.pay(payment_request.order_ref)
-		payment_request.sync_status()
+		payment_request.db_set("status", "Cancelled")
+		StubPayPalClient.approve(payment_request.order_ref)
 
-		self.post_webhook(build_order_approved_event(payment_request.order_ref, event_id="WH-LATE-0001"))
+		self.post_webhook(build_order_approved_event(payment_request.order_ref, event_id="WH-CLOSED-0001"))
 
 		self.assertEqual(StubPayPalClient.captured_orders, [])
+
+	def test_a_declined_capture_is_kept_for_a_retry_and_paypal_gets_a_200(self):
+		payment_request = make_paypal_payment_request(100, "USD")
+		StubPayPalClient.approve(payment_request.order_ref)
+		StubPayPalClient.next_capture_issue = "INSTRUMENT_DECLINED"
+
+		response = self.post_webhook(
+			build_order_approved_event(payment_request.order_ref, event_id="WH-DECLINED-0001")
+		)
+
+		self.assertEqual(response["status"], "ok")
+		self.assertIsNone(self.get_status_code())
+		log = frappe.get_doc("Integration Request", {"request_id": "WH-DECLINED-0001"})
+		self.assertEqual(log.status, "Failed")
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Pending")
+
+		StubPayPalClient.next_capture_issue = None
+		webhook.retry_webhook(log.name)
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
 
 	def test_a_delivery_paypal_will_not_verify_is_rejected(self):
 		payment_request = make_paypal_payment_request(100, "USD")
@@ -231,11 +253,13 @@ class TestPayPalRefundWebhook(PayPalWebhookTestCase):
 
 		self.assertEqual(self.get_refund(refund_id).status, "Failed")
 
-	def test_a_reversal_is_recorded_as_a_refund(self):
+	def test_a_reversal_is_not_recorded_as_a_refund(self):
 		payment_request = self.make_paid_request(20)
 		refund = build_refund(payment_request.gateway_transaction_ref, "COMPLETED", "20.00")
 
-		self.post_webhook(build_refund_event(refund, event_type="PAYMENT.CAPTURE.REVERSED"))
+		response = self.post_webhook(build_refund_event(refund, event_type="PAYMENT.CAPTURE.REVERSED"))
 
+		self.assertEqual(response["status"], "ok")
+		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": refund.id}))
 		payment_request.reload()
-		self.assertEqual(payment_request.status, "Refunded")
+		self.assertEqual(payment_request.status, "Paid")
