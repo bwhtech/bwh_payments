@@ -107,7 +107,7 @@ class TestGateways(IntegrationTestCase):
 		self.assertTrue(gateway.description)
 		self.assertTrue(gateway.docs_url.startswith("https://"))
 		self.assertTrue(gateway.logo.startswith("/assets/bwh_payments/images/gateways/razorpay"))
-		self.assertEqual(gateway.capabilities, [])
+		self.assertFalse(gateway.reusable_checkout)
 
 
 class TestRefundsAndImports(RazorpayTestCase):

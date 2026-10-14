@@ -42,8 +42,8 @@ PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport
 `refund_payment`, `handle_webhook`. Optional methods have defaults, so a third-party gateway that skips them
 keeps working: `cancel_session` (False), `get_transaction_ref` (the settled payment's id; None),
 `get_refund_status` (None = cannot report), `supported_currencies` (None = any), and the `logo` /
-`logo_dark`, `description`, `docs_url` and `capabilities` class attributes. `REUSABLE_CHECKOUT` in
-`capabilities` means the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
+`logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
+the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
 carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`). Callers read them through
 `<Model>.model_validate`, so a third-party gateway that still returns dicts keeps working. Each gateway is a
@@ -91,7 +91,7 @@ as it stands.
 - `get_payment_gateways` (names), `get_gateway_options(currency=None)` (`GatewayOption`: name, title,
   logos), `validate_currency(gateway, currency)`, `resolve_payment_mode`.
 - `get_gateways()` (`GatewayInfo`): every installed gateway, enabled or not, with its settings DocType,
-  description, docs link, capabilities and logos, so a consumer's settings screen needs no gateway list.
+  description, docs link, `reusable_checkout` and logos, so a consumer's settings screen needs no gateway list.
 - `refund(payment_request, amount=None, reference=None)` returns the Gateway Refund;
   `sync_refunds(payment_request)`.
 - `record_external_payment` / `record_external_refund`: import history settled elsewhere, idempotent,

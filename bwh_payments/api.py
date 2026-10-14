@@ -90,7 +90,7 @@ def get_gateways() -> list[GatewayInfo]:
 				settings_doctype=doctype,
 				description=settings.description,
 				docs_url=settings.docs_url,
-				capabilities=list(settings.capabilities),
+				reusable_checkout=settings.reusable_checkout,
 				logo=settings.logo,
 				logo_dark=settings.logo_dark or settings.logo,
 			)
