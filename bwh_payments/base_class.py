@@ -112,6 +112,10 @@ class PaymentGatewayBase(ABC):
 		"""What the gateway now says about a refund, or None when it cannot be asked."""
 		return None
 
+	def list_refunds(self, session_id: str) -> list[RefundResult] | None:
+		"""Every refund the gateway holds for the payment, or None when it cannot list them."""
+		return None
+
 	def get_transaction_ref(self, session_id: str) -> str | None:
 		"""The gateway's id for the settled payment, or None when it cannot say."""
 		return None

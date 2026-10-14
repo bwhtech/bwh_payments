@@ -27,6 +27,7 @@ same code for every gateway. Read the **[developer docs](https://docs.bwh.tech/b
 - **Telr**: cards and local payment methods in the GCC
 - **Tabby**: buy now, pay later in Saudi Arabia, the UAE, Kuwait, Bahrain and Qatar
 - **PayPal**: PayPal wallet payments in the currencies PayPal settles
+- **PayU**: cards, UPI, netbanking and wallets in India (INR)
 
 ### Features
 
