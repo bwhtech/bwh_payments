@@ -32,7 +32,13 @@ class LivePayUClient(BasePayUClient):
 
 	def list_refunds(self, mihpayid: str) -> list[PayURefund]:
 		response = self.post_command("check_action_status", mihpayid, "payuid")
-		return [PayURefund.model_validate(action) for action in get_details(response, mihpayid).values()]
+		actions = get_details(response, mihpayid)
+		# PayU puts a reason string here when it holds no actions for the payment.
+		return (
+			[PayURefund.model_validate(action) for action in actions.values()]
+			if isinstance(actions, dict)
+			else []
+		)
 
 	def post_command(self, command: str, *variables: str) -> dict:
 		# Only var1 is hashed: sha512(key|command|var1|salt).
