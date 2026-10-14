@@ -14,7 +14,6 @@ from bwh_payments.bwh_payments.doctype.payu_gateway_settings.test_payu_gateway_s
 	PayUTestCase,
 	make_payu_payment_request,
 )
-from bwh_payments.services.payu.base import PayURefund
 from bwh_payments.services.payu.stub import StubPayUClient, build_payment_event, build_refund_event
 
 
@@ -72,9 +71,7 @@ class TestPayUWebhookSpine(PayUTestCase):
 		payment_request = make_payu_payment_request(100)
 		mihpayid = StubPayUClient.pay(payment_request.order_ref)
 		payment_request.sync_status()
-		StubPayUClient.refunds["rfnd_dashboard"] = PayURefund(
-			request_id="rfnd_dashboard", status="SUCCESS", mihpayid=mihpayid
-		)
+		StubPayUClient.add_refund("rfnd_dashboard", "SUCCESS", mihpayid)
 
 		self.post_webhook(build_refund_event("rfnd_dashboard"), "application/json")
 

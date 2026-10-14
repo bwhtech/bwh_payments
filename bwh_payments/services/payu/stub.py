@@ -1,5 +1,6 @@
 import hashlib
 import json
+import random
 from typing import ClassVar
 from urllib.parse import urlencode
 
@@ -40,6 +41,11 @@ class StubPayUClient(BasePayUClient):
 		return cls.set_status(txnid, "captured")
 
 	@classmethod
+	def add_refund(cls, request_id: str, status: str, mihpayid: str, amt: str | None = None):
+		"""A refund raised outside this app, e.g. from the PayU dashboard."""
+		cls.refunds[request_id] = PayURefund(request_id=request_id, status=status, amt=amt, mihpayid=mihpayid)
+
+	@classmethod
 	def set_refund_status(cls, request_id: str, status: str):
 		cls.refunds[request_id].status = status
 
@@ -61,7 +67,7 @@ class StubPayUClient(BasePayUClient):
 			frappe.throw(_("PayU rejected the request: {0}").format("invalid mihpayid"))
 
 		refund = PayURefund(
-			request_id=frappe.generate_hash(length=10), status="QUEUED", amt=amount, mihpayid=mihpayid
+			request_id=str(random.randrange(10**10, 10**11)), status="QUEUED", amt=amount, mihpayid=mihpayid
 		)
 		self.refunds[refund.request_id] = refund
 		return refund.model_copy()

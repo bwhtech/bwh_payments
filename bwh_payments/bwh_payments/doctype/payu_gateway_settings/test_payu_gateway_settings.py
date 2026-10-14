@@ -238,6 +238,21 @@ class TestPayUCheckout(PayUTestCase):
 		self.assertNotIn("<script>alert", body)
 		self.assertIn("&quot;&gt;&lt;script&gt;", body)
 
+	def test_start_checkout_is_never_cached(self):
+		payment_request = make_payu_payment_request()
+
+		response = self.start_checkout(payment_request.name)
+
+		self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+	def test_start_checkout_refuses_a_disabled_gateway(self):
+		payment_request = make_payu_payment_request()
+		frappe.db.set_value("Payment Gateway Profile", PAYU_GATEWAY, "enabled", 0)
+		self.addCleanup(frappe.db.set_value, "Payment Gateway Profile", PAYU_GATEWAY, "enabled", 1)
+
+		with self.assertRaises(frappe.DoesNotExistError):
+			self.start_checkout(payment_request.name)
+
 	def test_start_checkout_refuses_a_request_that_is_not_an_open_payu_checkout(self):
 		paid = self.make_paid_request()
 		elsewhere = make_payu_payment_request()
@@ -370,6 +385,21 @@ class TestPayUWebhook(PayUTestCase):
 				f"{refund.refund_id}:processed",
 			),
 		)
+
+	def test_a_settled_refund_payu_does_not_show_yet_is_retried(self):
+		payment_request = self.make_paid_request()
+		refund = payment_request.create_refund(40)
+
+		with self.assertRaises(frappe.ValidationError):
+			self.handle(build_refund_event(refund.refund_id, status="success"), "application/json")
+
+	def test_a_numeric_request_id_is_read(self):
+		payment_request = self.make_paid_request()
+		refund = payment_request.create_refund(40)
+		StubPayUClient.set_refund_status(refund.refund_id, "SUCCESS")
+		body = json.dumps({"request_id": int(refund.refund_id), "status": "success"}).encode()
+
+		self.assertEqual(self.handle(body, "application/json").refund_id, refund.refund_id)
 
 	def test_a_refund_event_for_an_unknown_request_id_is_rejected(self):
 		with self.assertRaises(frappe.ValidationError):

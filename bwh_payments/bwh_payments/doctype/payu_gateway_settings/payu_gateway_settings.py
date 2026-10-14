@@ -15,7 +15,7 @@ from frappe.utils.data import flt
 from werkzeug.wrappers import Response
 
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
-from bwh_payments.bwh_payments.utils import add_reference_id
+from bwh_payments.bwh_payments.utils import add_reference_id, supports_currency
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 from bwh_payments.services.payu.base import BasePayUClient, payu_hash
 from bwh_payments.services.payu.live import LivePayUClient
@@ -87,7 +87,7 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 	) -> CheckoutSession:
 		"""PayU checkout is a form the browser posts, so no PayU call is made until `start_checkout`."""
 		validate_transaction_currency(currency)
-		if currency.strip().upper() not in PAYU_SUPPORTED_CURRENCIES:
+		if not supports_currency(self, currency):
 			frappe.throw(_("PayU takes payments only in INR"))
 		# PayU's page dead-ends without them, so refuse here rather than strand the shopper.
 		customer = customer or {}
@@ -139,7 +139,7 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 	def handle_webhook(self, payload: bytes, headers: dict) -> WebhookEvent | None:
 		data = read_body(payload)
 		if data.get("request_id") and not data.get("hash"):
-			return self.read_refund_event(data["request_id"])
+			return self.read_refund_event(str(data["request_id"]), read_refund_status(data.get("status")))
 		if not (data.get("hash") or data.get("txnid")):
 			return None
 
@@ -176,10 +176,13 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 			parts.insert(0, data["additionalCharges"])
 		return payu_hash(*parts)
 
-	def read_refund_event(self, request_id: str) -> WebhookEvent:
+	def read_refund_event(self, request_id: str, announced_status: str) -> WebhookEvent:
 		# PayU does not sign refund webhooks, so the body only names the refund; PayU is asked for the rest.
 		refund = self.get_client().get_refund(request_id)
 		status = read_refund_status(refund.status)
+		# A 200 ends PayU's deliveries, so a settled refund its API does not show yet must be retried.
+		if status == "pending" and announced_status != "pending":
+			frappe.throw(_("PayU has not settled refund {0} yet").format(request_id))
 		return WebhookEvent(
 			refund_id=request_id,
 			status=status,
@@ -193,14 +196,13 @@ class PayUGatewaySettings(Document, PaymentGatewayBase):
 		return RefundResult(refund_id=refund_id, status=read_refund_status(refund.status))
 
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
-		client = self.get_client()
-		transaction = client.verify_payment(session_id)
-		if read_status(transaction.unmappedstatus) != PAYU_CAPTURED_STATUS:
+		mihpayid = self.get_transaction_ref(session_id)
+		if not mihpayid:
 			frappe.throw(_("PayU has no captured payment to refund"))
 
 		# PayU dedupes refunds on the token, at most 23 characters.
-		refund = client.refund(
-			transaction.mihpayid,
+		refund = self.get_client().refund(
+			mihpayid,
 			frappe.generate_hash(length=20),
 			format_payu_amount(amount, currency or "INR"),
 		)
@@ -232,9 +234,10 @@ def format_payu_amount(amount: float, currency: str) -> str:
 def get_payu_request(request: str):
 	"""The request behind a guest link, refused as not found unless it is a PayU checkout."""
 	gateway = frappe.db.get_value("Gateway Payment Request", request, "gateway")
-	if not gateway or frappe.db.get_value("Payment Gateway Profile", gateway, "gateway_settings") != (
-		SETTINGS_DOCTYPE
-	):
+	profile = gateway and frappe.db.get_value(
+		"Payment Gateway Profile", gateway, ["gateway_settings", "enabled"], as_dict=True
+	)
+	if not (profile and profile.enabled and profile.gateway_settings == SETTINGS_DOCTYPE):
 		raise frappe.DoesNotExistError(_("Payment not found"))
 	return frappe.get_doc("Gateway Payment Request", request)
 
@@ -258,7 +261,8 @@ def start_checkout(request: str) -> Response:
 		inputs=inputs,
 		button=escape(_("Continue to PayU")),
 	)
-	return Response(html, content_type="text/html; charset=utf-8")
+	# The page holds the shopper's email and phone.
+	return Response(html, content_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
 
 # nosemgrep: guest-whitelisted-method  # PayU posts the shopper back here; it ignores the body and only redirects
