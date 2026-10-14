@@ -2,7 +2,9 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
+from frappe.utils.data import flt
 
 from bwh_payments.base_class import RefundResult
 
@@ -42,6 +44,11 @@ class GatewayRefund(Document):
 		refund_id: DF.Data | None
 		status: DF.Literal["Pending", "Processed", "Failed"]
 	# end: auto-generated types
+
+	def validate(self):
+		# A refund the gateway reports without an amount must not be recorded as zero.
+		if flt(self.amount) <= 0:
+			frappe.throw(_("Refund amount must be greater than zero"))
 
 	def on_update(self):
 		if not self.has_value_changed("status"):

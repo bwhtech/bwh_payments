@@ -1,6 +1,6 @@
 import re
 from contextlib import contextmanager
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe.utils.caching import redis_cache
@@ -35,6 +35,13 @@ def get_localised_url(url: str) -> str:
 
 	segments[1] = language
 	return urlunsplit((parts.scheme, parts.netloc, "/".join(segments), parts.query, parts.fragment))
+
+
+def add_reference_id(url: str, reference: str | None) -> str:
+	"""Localise a return URL and append `reference_id`, which storefronts read to find the request."""
+	parts = urlsplit(get_localised_url(url))
+	query = [*parse_qsl(parts.query), ("reference_id", reference or "")]
+	return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def get_gateway_settings(gateway: str):

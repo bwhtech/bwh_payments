@@ -8,6 +8,7 @@ from frappe.geo.doctype.currency.currency import Currency
 from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
+from bwh_payments.api import record_external_refund
 from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_payment_request import (
 	configure_stripe_gateway,
 	make_payment_request,
@@ -48,6 +49,12 @@ class TestGatewayRefund(IntegrationTestCase):
 		self.assertEqual(refund.reference, "BOOKING-REFUND-1")
 		self.assertEqual(flt(refund.amount), 30)
 		self.assertEqual(refund.currency, "SAR")
+
+	def test_an_imported_refund_without_an_amount_is_refused(self):
+		payment_request = self.make_paid_request()
+
+		with self.assertRaises(frappe.ValidationError):
+			record_external_refund(payment_request.name, "re_imported_zero", "processed", 0)
 
 	def test_a_pending_refund_is_not_counted_as_refunded_yet(self):
 		payment_request = self.make_paid_request()
