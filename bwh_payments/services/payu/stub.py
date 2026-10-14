@@ -67,7 +67,7 @@ class StubPayUClient(BasePayUClient):
 			frappe.throw(_("PayU rejected the request: {0}").format("invalid mihpayid"))
 
 		refund = PayURefund(
-			request_id=str(random.randrange(10**10, 10**11)), status="QUEUED", amt=amount, mihpayid=mihpayid
+			request_id=str(random.randrange(10**10, 10**11)), status="queued", amt=amount, mihpayid=mihpayid
 		)
 		self.refunds[refund.request_id] = refund
 		return refund.model_copy()

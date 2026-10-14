@@ -1,3 +1,5 @@
+import json
+
 import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log, make_post_request
@@ -43,6 +45,12 @@ class LivePayUClient(BasePayUClient):
 			log_request(command, error=str(exception))
 			frappe.throw(_("PayU rejected the request: {0}").format(_("unknown error")))
 
+		# PayU sends its JSON without a JSON content type, so it arrives as text.
+		if isinstance(response, str):
+			try:
+				response = json.loads(response)
+			except ValueError:
+				pass
 		if not isinstance(response, dict):
 			log_request(command, error="PayU returned a non-JSON body")
 			frappe.throw(_("PayU returned an unreadable response"))
