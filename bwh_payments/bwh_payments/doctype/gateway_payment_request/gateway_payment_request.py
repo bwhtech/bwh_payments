@@ -295,6 +295,8 @@ class GatewayPaymentRequest(Document):
 
 	def record_external_refund(self, refund_id: str, amount: float):
 		"""Record a refund raised outside this app, e.g. from the gateway's dashboard."""
+		if flt(amount) <= 0:
+			frappe.throw(_("Refund {0} carries no amount, so it cannot be recorded").format(refund_id))
 		return frappe.get_doc(
 			{
 				"doctype": "Gateway Refund",

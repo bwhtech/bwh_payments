@@ -150,6 +150,13 @@ An insert that is already settled is an import and fires neither.
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
   `get_payment_status` also *captures* an authorised payment; that capture is where money is taken.
+- **PayU India**: raw HTTP form POSTs to `postservice.php` (`verify_payment`, `cancel_refund_transaction`,
+  `check_action_status`), each signed with `payu_hash` (sha512) and the salt. Checkout is a browser form
+  POST, so `create_session` makes no call: `order_url` is our own `start_checkout`, which renders the
+  signed form, and the txnid we generate is the `order_ref`. PayU returns the shopper by a cross-site POST,
+  so surl/furl go through `return_from_payu`, which drops the `sid=Guest` cookies and redirects to the
+  stored URL. Payment webhooks are checked with the reverse hash. Refund webhooks are unsigned, so the
+  refund is read back from PayU with `check_action_status`. INR only.
 
 ### Money and currency rules
 

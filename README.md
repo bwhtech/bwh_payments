@@ -25,6 +25,7 @@ for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payment
 - **Razorpay**: cards, UPI, netbanking and wallets in India
 - **Telr**: cards and local payment methods in the GCC
 - **Tabby**: buy now, pay later in Saudi Arabia, the UAE, Kuwait, Bahrain and Qatar
+- **PayU**: cards, UPI, netbanking and wallets in India (INR)
 
 ### Features
 
