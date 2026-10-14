@@ -292,9 +292,9 @@ class TestPayUStatus(PayUTestCase):
 			("captured", "Paid"),
 			(" Captured ", "Paid"),
 			("userCancelled", "Cancelled"),
-			("failed", "Not Paid"),
-			("bounced", "Not Paid"),
-			("dropped", "Not Paid"),
+			("failed", "Pending"),
+			("bounced", "Pending"),
+			("dropped", "Pending"),
 			("autorefund", "Not Paid"),
 			("auth", "Pending"),
 			("pending", "Pending"),
@@ -343,10 +343,10 @@ class TestPayUWebhook(PayUTestCase):
 
 		self.assertEqual(self.handle(payload).status, "Paid")
 
-	def test_a_failure_event_is_not_paid(self):
+	def test_a_failed_attempt_leaves_the_request_open_for_a_retry(self):
 		payload = build_payment_event("txn_failed", PAYU_KEY, PAYU_SALT, unmappedstatus="failed")
 
-		self.assertEqual(self.handle(payload).status, "Not Paid")
+		self.assertEqual(self.handle(payload).status, "Pending")
 
 	def test_a_forged_or_foreign_event_is_rejected(self):
 		forged = dict(parse_qsl(build_payment_event("txn_forged", PAYU_KEY, PAYU_SALT).decode()))

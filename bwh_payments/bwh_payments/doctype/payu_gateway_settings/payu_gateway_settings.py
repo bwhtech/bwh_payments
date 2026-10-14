@@ -28,13 +28,11 @@ PAYU_LIVE_CHECKOUT_URL = "https://secure.payu.in/_payment"
 PAYU_SUPPORTED_CURRENCIES = ("INR",)
 PAYU_CAPTURED_STATUS = "captured"
 
-# Keyed on `unmappedstatus`. Unmapped states (auth, pending, in progress, not found) stay Pending.
+# Keyed on `unmappedstatus`. Everything else stays Pending: failed, bounced and dropped included, because
+# the shopper can retry on the same txnid and a request that left Pending ignores the later capture.
 PAYU_STATUS_MAP = {
 	"captured": "Paid",
 	"usercancelled": "Cancelled",
-	"failed": "Not Paid",
-	"bounced": "Not Paid",
-	"dropped": "Not Paid",
 	"autorefund": "Not Paid",
 }
 # To `gateway_refund.REFUND_STATUS_MAP` values; anything else is pending.

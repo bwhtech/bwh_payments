@@ -78,3 +78,16 @@ class TestPayUWebhookSpine(PayUTestCase):
 		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": "rfnd_dashboard"}))
 		payment_request.reload()
 		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_capture_after_a_failed_attempt_on_the_same_txnid_marks_the_request_paid(self):
+		payment_request = make_payu_payment_request(100)
+		StubPayUClient.set_status(payment_request.order_ref, "failed")
+		self.post_webhook(
+			build_payment_event(payment_request.order_ref, PAYU_KEY, PAYU_SALT, unmappedstatus="failed")
+		)
+		StubPayUClient.pay(payment_request.order_ref)
+
+		self.post_webhook(build_payment_event(payment_request.order_ref, PAYU_KEY, PAYU_SALT))
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
