@@ -43,6 +43,9 @@ DEFAULT_REJECTION_MESSAGE = "Tabby could not approve this order. Please choose a
 
 
 class TabbyGatewaySettings(Document, PaymentGatewayBase):
+	description = "Buy now, pay later in four instalments. MENA."
+	docs_url = "https://docs.tabby.ai/"
+
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 

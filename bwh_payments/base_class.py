@@ -24,10 +24,15 @@ class RefundResult(GatewayResult):
 
 
 class WebhookEvent(GatewayResult):
-	"""A payment event carries `session_id`; a refund event carries `refund_id` instead."""
+	"""A payment event carries `session_id`; a refund event carries `refund_id` instead.
+
+	With `sync_status`, the request asks the gateway instead of applying `status`. A gateway whose
+	payment still needs a capture uses it, so money moves in our own status sync, never in a guest request.
+	"""
 
 	session_id: str | None = None
 	status: str
+	sync_status: bool = False
 	event_id: str | None = None
 	refund_id: str | None = None
 	# Major units. Needed to record a refund raised outside this app.
@@ -51,11 +56,28 @@ class GatewayOption(BaseModel):
 	logo_dark: str | None = None
 
 
+class GatewayInfo(BaseModel):
+	"""A gateway this app can take payments through, as a settings screen lists it, set up or not."""
+
+	name: str
+	settings_doctype: str
+	description: str | None = None
+	docs_url: str | None = None
+	reusable_checkout: bool = False
+	logo: str | None = None
+	logo_dark: str | None = None
+
+
 class PaymentGatewayBase(ABC):
 	"""Contract for every `<Gateway> Gateway Settings` Single. Amounts are in major units (12.34)."""
 
 	logo: str | None = None
 	logo_dark: str | None = None
+	# One line for a merchant choosing a gateway, and where they find its credentials.
+	description: str | None = None
+	docs_url: str | None = None
+	# The checkout link stays payable after the shopper leaves it, so a caller can send them back to it.
+	reusable_checkout: bool = False
 
 	@abstractmethod
 	def create_session(

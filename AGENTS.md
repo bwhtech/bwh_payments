@@ -5,7 +5,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex and others) 
 ## What this is
 
 `bwh_payments` is a Frappe app (Frappe 16+, Python 3.14) that takes payments through hosted checkout pages
-on Stripe, Razorpay, Telr and Tabby, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
+on Stripe, Razorpay, Telr, Tabby and PayPal, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
 https://docs.bwh.tech/bwh-payments/get-started/overview
 
 The repo sits inside a bench at `/Users/harsh/bwh/bwh_payments` (`apps/bwh_payments`); the local site is
@@ -43,9 +43,12 @@ PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport
 keeps working: `cancel_session` (False), `get_transaction_ref` (the settled payment's id; None),
 `get_refund_status` (None = cannot report), `list_refunds` (None = cannot list; `sync_refunds` records
 the unknown ones), `supported_currencies` (None = any), and the `logo` /
-`logo_dark` class attributes. `create_session` also takes an optional `return_url`, passed only when set.
+`logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
+the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
-carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`). Callers read them through
+carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`; a payment event
+with `sync_status` makes the request ask the gateway instead of applying `status`, for a gateway that still
+has to capture). Callers read them through
 `<Model>.model_validate`, so a third-party gateway that still returns dicts keeps working. Each gateway is a
 **Single DocType** `<Name> Gateway Settings` whose controller inherits `(Document, PaymentGatewayBase)` and
 holds the credentials (as `Password` fields, read with `get_password`).
@@ -74,7 +77,8 @@ Every external service sits behind a client in `bwh_payments/services/<service>/
 The settings controller picks the client in `get_client()`: the stub when `frappe.in_test`, otherwise the
 live one. There is no other switch, so a real site can never run on a stub. The controller keeps every
 decision: currency conversion, URL building, status maps, capture and refund rules, and webhook signature
-checks. Signature checks are local crypto and must never move into a client a stub could replace.
+checks. Signature checks are local crypto and must never move into a client a stub could replace. PayPal is
+the one deliberate exception (see below).
 
 Live HTTP clients pass no timeout: `make_request` accepts one only from Frappe 17. Add it when Frappe 16
 support is dropped.
@@ -90,6 +94,8 @@ as it stands.
   `company`, `redirect_to` (a path on this site) and `customer_*`.
 - `get_payment_gateways` (names), `get_gateway_options(currency=None)` (`GatewayOption`: name, title,
   logos), `validate_currency(gateway, currency)`, `resolve_payment_mode`.
+- `get_gateways()` (`GatewayInfo`): every installed gateway, enabled or not, with its settings DocType,
+  description, docs link, `reusable_checkout` and logos, so a consumer's settings screen needs no gateway list.
 - `refund(payment_request, amount=None, reference=None)` returns the Gateway Refund;
   `sync_refunds(payment_request)`.
 - `record_external_payment` / `record_external_refund`: import history settled elsewhere, idempotent,
@@ -118,13 +124,17 @@ An insert that is already settled is an import and fires neither.
    `Paid`, `gateway_transaction_ref` is read through `get_transaction_ref` (a failure never blocks it).
    - **Webhook**: `webhook.handle` (guest POST, `?gateway=<profile>`, rate-limited) verifies the delivery,
      logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
-     queues `process_webhook`. The job applies it as Administrator; a failure is rolled back to a
+     queues `process_webhook`. The job applies it as Administrator (a `sync_status` event runs
+     `sync_status` on a Pending request instead); a failure is rolled back to a
      savepoint, logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
      are raised as `RetryBackgroundJobError`, because Frappe's job runner does not retry the
-     `QueryDeadlockError` / `QueryTimeoutError` it wraps them in.
+     `QueryDeadlockError` / `QueryTimeoutError` it wraps them in. A live client raises
+     `services.GatewayUnavailableError` for a 5xx, a 429 or a dropped connection; the job marks the log
+     Failed, commits, and raises `RetryBackgroundJobError` so Frappe retries it.
    - **Return**: `checkout.return_from_gateway` (guest GET, rate-limited) runs `sync_status` and redirects
      to `redirect_to`. Never trust the browser redirect itself.
-   - **Pull**: whitelisted `sync_status` asks the gateway.
+   - **Pull**: whitelisted `sync_status` asks the gateway, and only while the request is Pending, because
+     asking may capture.
 4. `create_refund(amount=None, reference=None, payment_entry=None)` checks the amount under the row lock,
    inserts a **Gateway Refund** as `Pending` and commits it before calling the gateway, so the reservation
    holds once the lock is gone (Pending refunds count against what is left). The gateway's answer is
@@ -151,6 +161,22 @@ An insert that is already settled is an import and fires neither.
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
   `get_payment_status` also *captures* an authorised payment; that capture is where money is taken.
+- **PayPal**: raw HTTP (Orders v2) with a client-credentials token, cached per mode and client id. Only
+  `get_payment_status` captures an approved order, and it reads Paid from the capture, not the order: PayPal
+  completes an order whose capture is still `PENDING` (eCheck, review) or `DECLINED`. The
+  `CHECKOUT.ORDER.APPROVED` webhook returns a `sync_status` event (so does `PAYMENT.CAPTURE.DENIED`), so the
+  capture runs in `process_webhook` for our own Pending request: a guest request never moves money, an order
+  that is not ours is never captured, and a failed capture is a Failed Integration Request for
+  `retry_webhook`. When the return page and that job race, the loser gets `ORDER_ALREADY_CAPTURED`
+  (`PayPalOrderAlreadyCapturedError`), which counts as paid. Webhooks are signed with a certificate, so
+  verification is a call back to PayPal (`verify_webhook_signature`). It is the one verifier that goes
+  through the client, by decision: checking PayPal's certificate chain locally is easy to get wrong. The
+  stub's `next_verification_status` stands in for a forgery. `cancel_session` stays `False`: PayPal cannot
+  cancel an unapproved order. Refunds report `processed` for PayPal's `COMPLETED` and PayPal's own status
+  otherwise. Refund events: `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.REFUND.PENDING`, `PAYMENT.REFUND.FAILED`;
+  the refund names its capture only in its `up` link. `PAYMENT.CAPTURE.REVERSED` (dispute or chargeback) is
+  ignored on purpose: PayPal can reinstate the money with no webhook, and a settled Gateway Refund never
+  changes, so the merchant records a reversal once it stands. `get_transaction_ref` is the capture's id.
 - **PayU India**: raw HTTP form POSTs to `postservice.php` (`verify_payment`, `cancel_refund_transaction`,
   `check_action_status`), each signed with `payu_hash` (sha512) and the salt. Checkout is a browser form
   POST, so `create_session` makes no call: `order_url` is our own `start_checkout`, which renders the

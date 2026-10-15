@@ -23,6 +23,9 @@ STRIPE_REFUND_EVENTS = ("refund.created", "refund.updated", "refund.failed", "ch
 
 
 class StripeGatewaySettings(Document, PaymentGatewayBase):
+	description = "Cards and wallets, worldwide."
+	docs_url = "https://dashboard.stripe.com/apikeys"
+
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 

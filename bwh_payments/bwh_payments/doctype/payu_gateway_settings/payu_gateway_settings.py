@@ -46,6 +46,9 @@ CHECKOUT_FORM = """<!doctype html>
 
 
 class PayUGatewaySettings(Document, PaymentGatewayBase):
+	description = "Cards, UPI, netbanking and wallets. India, INR only."
+	docs_url = "https://docs.payu.in/"
+
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 

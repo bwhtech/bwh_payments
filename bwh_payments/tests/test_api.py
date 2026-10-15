@@ -10,12 +10,15 @@ from frappe.utils.data import flt
 
 from bwh_payments.api import (
 	get_gateway_options,
+	get_gateways,
 	record_external_payment,
 	record_external_refund,
 	refund,
 	sync_refunds,
 	validate_currency,
 )
+from bwh_payments.base_class import PaymentGatewayBase
+from bwh_payments.bwh_payments import utils
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RAZORPAY_GATEWAY,
 	RazorpayTestCase,
@@ -80,6 +83,46 @@ class TestGatewayOptions(IntegrationTestCase):
 	def test_validate_currency_refuses_a_currency_the_site_does_not_have(self):
 		with self.assertRaises(frappe.ValidationError):
 			validate_currency(RAZORPAY_GATEWAY, "XYZ")
+
+
+class TestGateways(IntegrationTestCase):
+	def get_gateway(self, name: str):
+		return next(gateway for gateway in get_gateways() if gateway.name == name)
+
+	def test_every_installed_gateway_is_listed_whether_or_not_it_is_set_up(self):
+		names = [gateway.name for gateway in get_gateways()]
+
+		self.assertTrue({"Razorpay", "Stripe", "Tabby", "Telr"} <= set(names))
+		self.assertEqual(names, sorted(names, key=str.casefold))
+
+	def test_a_gateway_whose_code_is_missing_is_skipped(self):
+		get_controller = utils.get_controller
+
+		def get_controller_without_stripe(doctype: str):
+			if doctype == "Stripe Gateway Settings":
+				raise ImportError("No module named stripe_gateway_settings")
+			return get_controller(doctype)
+
+		with patch.object(utils, "get_controller", side_effect=get_controller_without_stripe):
+			names = [gateway.name for gateway in get_gateways()]
+
+		self.assertNotIn("Stripe", names)
+		self.assertIn("Razorpay", names)
+
+	def test_each_gateway_names_the_settings_behind_it(self):
+		for gateway in get_gateways():
+			with self.subTest(gateway=gateway.name):
+				settings = frappe.get_single(gateway.settings_doctype)
+				self.assertIsInstance(settings, PaymentGatewayBase)
+				self.assertEqual(gateway.name, settings.get_gateway_name())
+
+	def test_a_gateway_carries_what_a_merchant_needs_to_choose_and_set_it_up(self):
+		gateway = self.get_gateway("Razorpay")
+
+		self.assertTrue(gateway.description)
+		self.assertTrue(gateway.docs_url.startswith("https://"))
+		self.assertTrue(gateway.logo.startswith("/assets/bwh_payments/images/gateways/razorpay"))
+		self.assertFalse(gateway.reusable_checkout)
 
 
 class TestRefundsAndImports(RazorpayTestCase):

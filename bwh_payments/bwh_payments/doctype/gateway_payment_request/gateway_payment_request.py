@@ -153,7 +153,10 @@ class GatewayPaymentRequest(Document):
 
 	@frappe.whitelist()
 	def sync_status(self):
-		status = self.get_gateway_settings().get_payment_status(self.order_ref)
+		# Asking the gateway may capture, so a request that is no longer Pending never asks.
+		status = None
+		if self.status == "Pending":
+			status = self.get_gateway_settings().get_payment_status(self.order_ref)
 
 		# Locked after the slow gateway call, so a webhook committed meanwhile cannot cause a
 		# TimestampMismatchError.

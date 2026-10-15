@@ -29,6 +29,9 @@ TELR_ACCEPTED_STATUS = "A"
 
 
 class TelrGatewaySettings(Document, PaymentGatewayBase):
+	description = "Cards and local methods across the GCC."
+	docs_url = "https://telr.com/support/knowledge-base/hosted-payment-page-integration-guide/"
+
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
