@@ -37,7 +37,8 @@ class WebhookEvent(GatewayResult):
 	refund_id: str | None = None
 	# Major units. Needed to record a refund raised outside this app.
 	refund_amount: float | None = None
-	# The settled payment's id, which finds the request for a refund raised outside this app.
+	# The settled payment's id. On a refund event it finds the request for a refund raised outside this
+	# app; on a payment event it is kept for gateways that cannot be asked for it later.
 	transaction_ref: str | None = None
 
 	@model_validator(mode="after")

@@ -5,7 +5,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex and others) 
 ## What this is
 
 `bwh_payments` is a Frappe app (Frappe 16+, Python 3.14) that takes payments through hosted checkout pages
-on Stripe, Razorpay, Telr, Tabby, PayPal, PayU and Braintree, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
+on Stripe, Razorpay, Telr, Tabby, PayPal, PayU, Braintree and M-Pesa, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
 https://docs.bwh.tech/bwh-payments/get-started/overview
 
 The repo sits inside a bench at `/Users/harsh/bwh/bwh_payments` (`apps/bwh_payments`); the local site is
@@ -46,9 +46,10 @@ the unknown ones), `supported_currencies` (None = any), and the `logo` /
 `logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
 the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
-carries `session_id`, a refund event `refund_id`, `refund_amount` and `transaction_ref`; a payment event
-with `sync_status` makes the request ask the gateway instead of applying `status`, for a gateway that still
-has to capture). Callers read them through
+carries `session_id` and, when only the webhook names the settled payment, `transaction_ref`; a refund
+event `refund_id`, `refund_amount` and `transaction_ref`; a payment event with `sync_status` makes the
+request ask the gateway instead of applying `status`, for a gateway that still has to capture). Callers
+read them through
 `<Model>.model_validate`, so a third-party gateway that still returns dicts keeps working. Each gateway is a
 **Single DocType** `<Name> Gateway Settings` whose controller inherits `(Document, PaymentGatewayBase)` and
 holds the credentials (as `Password` fields, read with `get_password`).
@@ -200,6 +201,13 @@ An insert that is already settled is an import and fires neither.
   carry the token as `order_id`; search is filtered to `type == sale` because refunds share it. Before
   settlement only a full refund (a void, reported `processed`) is possible. Webhooks are verified
   locally by the SDK with our keys and then ignored.
+- **M-Pesa**: Daraja STK Push (M-Pesa Express), raw HTTP, KES in whole shillings only. There is no
+  checkout page: `create_session` sends the PIN prompt to `customer["phone"]` and returns the return URL
+  as `redirect_url`, so the shopper lands there while the request is still Pending. Daraja takes a
+  callback URL per request and does not sign callbacks, so the URL carries `callback_token` (checked in
+  constant time, plus an optional source-IP allowlist). Only the paid callback names the M-Pesa receipt,
+  so it arrives as the event's `transaction_ref` and is kept in `gateway_transaction_ref`; refunds are
+  transaction reversals against that receipt, settled by the reversal result callback.
 
 ### Money and currency rules
 
