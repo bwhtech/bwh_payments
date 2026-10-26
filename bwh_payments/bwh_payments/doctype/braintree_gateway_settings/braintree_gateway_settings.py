@@ -395,6 +395,7 @@ def start_checkout(session: str) -> Response:
 
 
 def render_checkout(context: dict, status: int = 200) -> Response:
+	# nosemgrep: frappe-ssti  # CHECKOUT_TEMPLATE is a file in this app, never user input
 	html = frappe.render_template(CHECKOUT_TEMPLATE, {"title": _("Pay by card"), **context})
 	# The page holds the shopper's email and CSRF token.
 	return Response(

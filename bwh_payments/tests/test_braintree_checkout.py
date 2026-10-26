@@ -226,19 +226,25 @@ class TestBraintreeCheckoutPage(BraintreeTestCase):
 		payment_request = make_braintree_payment_request(20)
 		disable_profile(self)
 
+		# Saving the settings in setUp already asked for one per merchant account.
+		tokens_before = list(StubBraintreeClient.client_tokens)
+
 		response = start_checkout(payment_request.order_ref)
 
 		self.assertEqual(response.status_code, 404)
-		self.assertEqual(StubBraintreeClient.client_tokens, [])
+		self.assertEqual(StubBraintreeClient.client_tokens, tokens_before)
 
 	def test_a_profile_kept_for_history_only_shows_an_invalid_link(self):
 		payment_request = make_braintree_payment_request(20)
 		keep_profile_for_history_only(self)
 
+		# Saving the settings in setUp already asked for one per merchant account.
+		tokens_before = list(StubBraintreeClient.client_tokens)
+
 		response = start_checkout(payment_request.order_ref)
 
 		self.assertEqual(response.status_code, 404)
-		self.assertEqual(StubBraintreeClient.client_tokens, [])
+		self.assertEqual(StubBraintreeClient.client_tokens, tokens_before)
 
 
 class TestBraintreeWebhookSpine(BraintreeTestCase):
