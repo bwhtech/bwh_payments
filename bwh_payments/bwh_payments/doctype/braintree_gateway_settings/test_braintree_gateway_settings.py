@@ -80,7 +80,6 @@ def remove_braintree_gateway():
 				"Integration Request", log_name, ignore_permissions=True, delete_permanently=True
 			)
 
-	frappe.db.delete("Error Log", {"method": ["like", "Braintree order placement failed%"]})
 	frappe.delete_doc(
 		"Payment Gateway Profile",
 		BRAINTREE_GATEWAY,
