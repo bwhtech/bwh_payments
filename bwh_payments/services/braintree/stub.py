@@ -7,7 +7,9 @@ from frappe import _
 
 from bwh_payments.services.braintree.base import BaseBraintreeClient, BraintreeResult, BraintreeTransaction
 
-VALID_NONCE = "fake-valid-nonce"
+# Braintree's own test nonces: a card that passed 3-D Secure, and one tokenised without it.
+VALID_NONCE = "fake-three-d-secure-visa-full-authentication-nonce"
+NO_THREE_D_SECURE_NONCE = "fake-valid-nonce"
 # Braintree's sandbox declines any amount in this range, whatever the card.
 DECLINED_AMOUNTS = (Decimal("2000.00"), Decimal("3000.00"))
 REFUNDABLE_STATUSES = ("settled", "settling")
@@ -83,20 +85,27 @@ class StubBraintreeClient(BaseBraintreeClient):
 	def sale(self, params: dict) -> BraintreeResult:
 		self.sales.append(params)
 		amount = Decimal(params["amount"])
-		if params.get("payment_method_nonce") != VALID_NONCE:
+		nonce = params.get("payment_method_nonce")
+		if nonce not in (VALID_NONCE, NO_THREE_D_SECURE_NONCE):
 			return BraintreeResult(is_success=False, message="Unknown or expired payment_method_nonce.")
 
+		options = params.get("options") or {}
+		three_d_secure_required = (options.get("three_d_secure") or {}).get("required")
 		low, high = DECLINED_AMOUNTS
-		declined = low <= amount < high
-		submit = (params.get("options") or {}).get("submit_for_settlement")
-		status = "processor_declined" if declined else "submitted_for_settlement" if submit else "authorized"
+		if three_d_secure_required and nonce != VALID_NONCE:
+			status, message = "gateway_rejected", "Gateway Rejected: three_d_secure"
+		elif low <= amount < high:
+			status, message = "processor_declined", "Do Not Honor"
+		else:
+			status = "submitted_for_settlement" if options.get("submit_for_settlement") else "authorized"
+			message = None
 		transaction_id = self.add_transaction(
 			order_id=params.get("order_id"), amount=params["amount"], status=status
 		)
 		self.unindexed.add(transaction_id)
 		return BraintreeResult(
-			is_success=not declined,
-			message="Do Not Honor" if declined else None,
+			is_success=message is None,
+			message=message,
 			transaction=self.find_transaction(transaction_id),
 		)
 

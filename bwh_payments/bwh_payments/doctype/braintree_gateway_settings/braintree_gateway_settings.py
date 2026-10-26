@@ -7,8 +7,12 @@ import braintree
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.rate_limiter import rate_limit
+from frappe.sessions import get_csrf_token
 from frappe.utils import get_url
 from frappe.utils.data import flt
+from werkzeug.utils import redirect
+from werkzeug.wrappers import Response
 
 from bwh_payments.base_class import (
 	CheckoutSession,
@@ -27,8 +31,12 @@ BRAINTREE_ENVIRONMENTS = {
 	"Production": braintree.Environment.Production,
 }
 
+SETTINGS_DOCTYPE = "Braintree Gateway Settings"
+ENDPOINT = (
+	"/api/method/bwh_payments.bwh_payments.doctype.braintree_gateway_settings.braintree_gateway_settings"
+)
 # Braintree has no hosted payment page, so the shopper is sent to ours, which renders Drop-in.
-CHECKOUT_PAGE_ROUTE = "/braintree-checkout"
+CHECKOUT_TEMPLATE = "bwh_payments/templates/braintree_checkout.html"
 SESSION_TOKEN_LENGTH = 32
 # Seconds a second `pay()` on the same session waits for the first to finish.
 SESSION_LOCK_TIMEOUT = 20
@@ -42,14 +50,9 @@ BRAINTREE_PAID_STATUSES = (
 	"settlement_confirmed",
 )
 
-# Unmapped states stay Pending. Declines are Pending too, so the shopper can retry another card.
+# Unmapped states stay Pending, declines included, so the shopper can retry another card.
 BRAINTREE_STATUS_MAP = {
 	**dict.fromkeys(BRAINTREE_PAID_STATUSES, "Paid"),
-	"authorizing": "Pending",
-	"authorized": "Pending",
-	"processor_declined": "Pending",
-	"gateway_rejected": "Pending",
-	"failed": "Pending",
 	"settlement_declined": "Not Paid",
 	"settlement_failed": "Not Paid",
 	"voided": "Cancelled",
@@ -175,7 +178,7 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 		session_id = frappe.generate_hash(length=SESSION_TOKEN_LENGTH)
 		return CheckoutSession(
 			session_id=session_id,
-			redirect_url=get_url(f"{CHECKOUT_PAGE_ROUTE}?{urlencode({'session': session_id})}"),
+			redirect_url=get_url(f"{ENDPOINT}.start_checkout?{urlencode({'session': session_id})}"),
 			success_url=return_url or self.build_return_url(self.success_url, _("Success URL"), reference),
 			cancel_url=return_url or self.build_return_url(self.cancelled_url, _("Cancelled URL"), reference),
 			failure_url=return_url or get_localised_url(self.failure_url),
@@ -189,13 +192,18 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 
 	def charge(self, session_id: str, amount: float, currency: str, nonce: str) -> BraintreeResult:
 		"""One sale for the request's own amount; the caller holds the session lock."""
+		options = {"submit_for_settlement": True}
+		if self.three_d_secure:
+			# `pay()` is a guest endpoint, so the page's own 3-D Secure check can be skipped by posting a
+			# nonce straight to it. Required here, Braintree itself refuses a nonce without the liability shift.
+			options["three_d_secure"] = {"required": True}
 		return self.get_client().sale(
 			{
 				"amount": format_amount(amount, currency),
 				"payment_method_nonce": nonce,
 				"merchant_account_id": self.get_merchant_account(currency),
 				"order_id": session_id,
-				"options": {"submit_for_settlement": True},
+				"options": options,
 			}
 		)
 
@@ -250,8 +258,6 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 			frappe.throw(_("Braintree refund failed: {0}").format(result.message))
 
 		refund = result.transaction
-		if not refund:
-			return RefundResult(amount=flt(amount))
 		return RefundResult(
 			refund_id=refund.id,
 			status=read_refund_status(refund),
@@ -295,6 +301,8 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 		"""Every sale on this session, declines included.
 
 		Search can trail a fresh sale by a few seconds, so the sale `pay()` recorded is also fetched directly.
+		`cancel_session` and `sync_status` get only the session id, and without it a cancel in that window
+		would cancel a request that was charged.
 		"""
 		client = self.get_client()
 		transactions = {transaction.id: transaction for transaction in client.search_sales(session_id)}
@@ -335,3 +343,114 @@ def read_refund_status(refund: BraintreeTransaction) -> str:
 	if refund.type == "sale":
 		return "processed" if refund.status == "voided" else "pending"
 	return BRAINTREE_REFUND_STATUS_MAP.get(refund.status, "pending")
+
+
+def get_payable_request(session: str):
+	"""The request behind a checkout session, refused unless its profile is an enabled Braintree one."""
+	request = session and frappe.db.get_value(
+		"Gateway Payment Request", {"order_ref": session}, ["name", "gateway"], as_dict=True
+	)
+	profile = request and frappe.db.get_value(
+		"Payment Gateway Profile", request.gateway, ["gateway_settings", "enabled"], as_dict=True
+	)
+	if not (profile and profile.enabled and profile.gateway_settings == SETTINGS_DOCTYPE):
+		frappe.throw(_("This payment link is not valid."), frappe.PermissionError)
+	return frappe.get_doc("Gateway Payment Request", request.name)
+
+
+# nosemgrep: guest-whitelisted-method  # the 32-character session token is the capability
+@frappe.whitelist(allow_guest=True, methods=["GET"])
+@rate_limit(limit=60, seconds=60, ip_based=True)
+def start_checkout(session: str) -> Response:
+	try:
+		payment_request = get_payable_request(session)
+	except frappe.PermissionError:
+		frappe.clear_messages()
+		return render_checkout({"error": _("This payment link is not valid.")}, status=404)
+
+	if payment_request.status == "Paid":
+		return redirect(payment_request.success_url)
+	if payment_request.status != "Pending":
+		return render_checkout(
+			{"error": _("This payment is no longer open."), "cancel_url": payment_request.cancel_url}
+		)
+
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	currency = payment_request.currency_code
+	return render_checkout(
+		{
+			"session": session,
+			"amount": format_amount(payment_request.amount, currency),
+			"currency": currency,
+			"email": payment_request.customer_email or "",
+			"three_d_secure": bool(settings.three_d_secure),
+			"cancel_url": payment_request.cancel_url,
+			"client_token": settings.get_client().generate_client_token(
+				settings.get_merchant_account(currency)
+			),
+			# A signed-in shopper's POST to `pay()` is refused without it.
+			"csrf_token": get_csrf_token(),
+		}
+	)
+
+
+def render_checkout(context: dict, status: int = 200) -> Response:
+	html = frappe.render_template(CHECKOUT_TEMPLATE, {"title": _("Pay by card"), **context})
+	# The page holds the shopper's email and CSRF token.
+	return Response(
+		html, status=status, content_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"}
+	)
+
+
+# nosemgrep: guest-whitelisted-method  # the 32-character session token is the capability
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+@rate_limit(limit=20, seconds=60, ip_based=True)
+def pay(session: str, nonce: str) -> dict:
+	"""Charge the request behind `session` once. The amount comes from the request, never the browser.
+
+	Returns `{"redirect_url"}` once paid, or `{"error"}` for a decline the shopper can retry.
+	"""
+	get_payable_request(session)
+	acquire_session_lock(session)
+	try:
+		# Nothing is written yet. A fresh snapshot after the wait, or MariaDB's snapshot isolation fails
+		# the row lock below with "Record has changed" once the first attempt commits.
+		frappe.db.commit()  # nosemgrep
+		result = charge_request(get_payable_request(session), nonce)
+		# Committed before the lock is released, so a second attempt sees this sale and does not charge.
+		frappe.db.commit()  # nosemgrep
+		return result
+	finally:
+		release_session_lock(session)
+
+
+def charge_request(payment_request, nonce: str) -> dict:
+	payment_request.lock_row()
+	if payment_request.status == "Paid":
+		return {"redirect_url": payment_request.success_url}
+	if payment_request.status != "Pending":
+		frappe.throw(_("This payment is no longer open."))
+
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	# A sale an earlier attempt made, if the shopper retried before the page caught up.
+	if settings.get_payment_status(payment_request.order_ref) != "Paid":
+		result = settings.charge(
+			payment_request.order_ref, payment_request.amount, payment_request.currency_code, nonce
+		)
+		if not result.is_success:
+			return {
+				"error": _("The payment was declined: {0}. Please try another card.").format(result.message)
+			}
+		payment_request.db_set("gateway_transaction_ref", result.transaction.id, update_modified=False)
+		# The money has moved: keep the record even if placing the order below fails.
+		frappe.db.commit()  # nosemgrep
+
+	# Placed here rather than by the return page, so closing the tab after paying still places the order.
+	try:
+		# As the shopper, not Administrator: the order's app elevates itself and stamps the shopper as owner.
+		payment_request.sync_status()
+	except Exception:
+		# The shopper has paid, so they still go to the confirmation page, whose sync retries the order.
+		frappe.db.rollback()
+		frappe.log_error(title=f"Braintree order placement failed for {payment_request.name}")
+	return {"redirect_url": payment_request.success_url}

@@ -10,7 +10,10 @@ from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
 from bwh_payments.bwh_payments import webhook
-from bwh_payments.bwh_payments.braintree_checkout import pay
+from bwh_payments.bwh_payments.doctype.braintree_gateway_settings.braintree_gateway_settings import (
+	pay,
+	start_checkout,
+)
 from bwh_payments.bwh_payments.doctype.braintree_gateway_settings.test_braintree_gateway_settings import (
 	BRAINTREE_GATEWAY,
 	BraintreeTestCase,
@@ -19,7 +22,23 @@ from bwh_payments.bwh_payments.doctype.braintree_gateway_settings.test_braintree
 from bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_request import (
 	GatewayPaymentRequest,
 )
-from bwh_payments.services.braintree.stub import VALID_NONCE, StubBraintreeClient
+from bwh_payments.services.braintree.stub import NO_THREE_D_SECURE_NONCE, VALID_NONCE, StubBraintreeClient
+
+
+def disable_profile(test):
+	frappe.db.set_value("Payment Gateway Profile", BRAINTREE_GATEWAY, "enabled", 0)
+	test.addCleanup(frappe.db.set_value, "Payment Gateway Profile", BRAINTREE_GATEWAY, "enabled", 1)
+
+
+def keep_profile_for_history_only(test):
+	frappe.db.set_value("Payment Gateway Profile", BRAINTREE_GATEWAY, "gateway_settings", None)
+	test.addCleanup(
+		frappe.db.set_value,
+		"Payment Gateway Profile",
+		BRAINTREE_GATEWAY,
+		"gateway_settings",
+		"Braintree Gateway Settings",
+	)
 
 
 class TestBraintreePay(BraintreeTestCase):
@@ -127,6 +146,99 @@ class TestBraintreePay(BraintreeTestCase):
 
 		with self.assertRaises(frappe.PermissionError):
 			pay(payment_request.name, VALID_NONCE)
+
+	def test_a_card_without_three_d_secure_is_refused_when_it_is_switched_on(self):
+		payment_request = make_braintree_payment_request(20)
+
+		result = pay(payment_request.order_ref, NO_THREE_D_SECURE_NONCE)
+
+		self.assertIn("three_d_secure", result["error"])
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Pending")
+		self.assertFalse(payment_request.gateway_transaction_ref)
+
+	def test_a_card_without_three_d_secure_is_charged_when_it_is_switched_off(self):
+		settings = self.get_settings()
+		settings.three_d_secure = 0
+		settings.save(ignore_permissions=True)
+		payment_request = make_braintree_payment_request(20)
+
+		pay(payment_request.order_ref, NO_THREE_D_SECURE_NONCE)
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_disabled_profile_is_refused(self):
+		payment_request = make_braintree_payment_request(20)
+		disable_profile(self)
+
+		with self.assertRaises(frappe.PermissionError):
+			pay(payment_request.order_ref, VALID_NONCE)
+		self.assertEqual(StubBraintreeClient.sales, [])
+
+	def test_a_profile_kept_for_history_only_is_refused(self):
+		payment_request = make_braintree_payment_request(20)
+		keep_profile_for_history_only(self)
+
+		with self.assertRaises(frappe.PermissionError):
+			pay(payment_request.order_ref, VALID_NONCE)
+		self.assertEqual(StubBraintreeClient.sales, [])
+
+
+class TestBraintreeCheckoutPage(BraintreeTestCase):
+	def test_an_open_request_renders_drop_in_with_the_request_amount(self):
+		payment_request = make_braintree_payment_request(49.99)
+
+		response = start_checkout(payment_request.order_ref)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.headers["Cache-Control"], "no-store")
+		page = response.get_data(as_text=True)
+		self.assertIn("stub-client-token-usd_account", page)
+		self.assertIn("49.99 USD", page)
+		self.assertIn(payment_request.order_ref, page)
+
+	def test_a_paid_request_redirects_to_its_success_url(self):
+		payment_request = make_braintree_payment_request(20)
+		pay(payment_request.order_ref, VALID_NONCE)
+
+		response = start_checkout(payment_request.order_ref)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertEqual(response.headers["Location"], payment_request.success_url)
+
+	def test_a_closed_request_shows_no_card_form(self):
+		payment_request = make_braintree_payment_request(20)
+		payment_request.release_if_unpaid()
+
+		page = start_checkout(payment_request.order_ref).get_data(as_text=True)
+
+		self.assertIn("This payment is no longer open.", page)
+		self.assertNotIn("dropin", page)
+
+	def test_an_unknown_session_shows_an_invalid_link(self):
+		response = start_checkout("not-a-session")
+
+		self.assertEqual(response.status_code, 404)
+		self.assertIn("This payment link is not valid.", response.get_data(as_text=True))
+
+	def test_a_disabled_profile_shows_an_invalid_link(self):
+		payment_request = make_braintree_payment_request(20)
+		disable_profile(self)
+
+		response = start_checkout(payment_request.order_ref)
+
+		self.assertEqual(response.status_code, 404)
+		self.assertEqual(StubBraintreeClient.client_tokens, [])
+
+	def test_a_profile_kept_for_history_only_shows_an_invalid_link(self):
+		payment_request = make_braintree_payment_request(20)
+		keep_profile_for_history_only(self)
+
+		response = start_checkout(payment_request.order_ref)
+
+		self.assertEqual(response.status_code, 404)
+		self.assertEqual(StubBraintreeClient.client_tokens, [])
 
 
 class TestBraintreeWebhookSpine(BraintreeTestCase):

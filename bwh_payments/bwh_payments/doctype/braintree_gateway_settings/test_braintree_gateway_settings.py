@@ -6,7 +6,7 @@ from frappe.tests import IntegrationTestCase
 
 from bwh_payments.api import get_gateways
 from bwh_payments.bwh_payments.doctype.braintree_gateway_settings import braintree_gateway_settings
-from bwh_payments.services.braintree.stub import StubBraintreeClient
+from bwh_payments.services.braintree.stub import VALID_NONCE, StubBraintreeClient
 
 BRAINTREE_GATEWAY = "Braintree"
 USD_ACCOUNT = "usd_account"
@@ -168,7 +168,10 @@ class TestBraintreeGatewaySettings(BraintreeTestCase):
 
 		self.assertEqual(len(payment_request.order_ref), 32)
 		self.assertNotEqual(payment_request.order_ref, payment_request.name)
-		self.assertIn(f"/braintree-checkout?session={payment_request.order_ref}", payment_request.order_url)
+		self.assertIn(
+			f"{braintree_gateway_settings.ENDPOINT}.start_checkout?session={payment_request.order_ref}",
+			payment_request.order_url,
+		)
 		self.assertIn(f"reference_id={payment_request.name}", payment_request.success_url)
 		self.assertIn(f"reference_id={payment_request.name}", payment_request.cancel_url)
 
@@ -184,11 +187,23 @@ class TestBraintreeGatewaySettings(BraintreeTestCase):
 			("AUD", 7, AUD_ACCOUNT, "7.00"),
 		):
 			with self.subTest(currency=currency):
-				settings.charge("session", amount, currency, "fake-valid-nonce")
+				settings.charge("session", amount, currency, VALID_NONCE)
 				sale = StubBraintreeClient.sales[-1]
 				self.assertEqual(sale["amount"], sent)
 				self.assertEqual(sale["merchant_account_id"], account)
-				self.assertEqual(sale["options"], {"submit_for_settlement": True})
+
+	def test_three_d_secure_is_required_on_the_sale_when_switched_on(self):
+		settings = self.get_settings()
+
+		settings.charge("session", 20, "USD", VALID_NONCE)
+		self.assertEqual(
+			StubBraintreeClient.sales[-1]["options"],
+			{"submit_for_settlement": True, "three_d_secure": {"required": True}},
+		)
+
+		settings.three_d_secure = 0
+		settings.charge("session", 20, "USD", VALID_NONCE)
+		self.assertEqual(StubBraintreeClient.sales[-1]["options"], {"submit_for_settlement": True})
 
 	def test_amounts_follow_the_currency_exponent(self):
 		self.assertEqual(braintree_gateway_settings.format_amount(1000, "JPY"), "1000")

@@ -1,37 +1,37 @@
-{% extends "templates/web.html" %}
-
-{% block title %}{{ title }}{% endblock %}
-
-{% block page_content %}
-<style>
-	.bt-checkout { max-width: 480px; margin: 48px auto; padding: 0 16px; }
-	.bt-checkout h1 { font-size: 1.5rem; margin-bottom: 4px; }
-	.bt-amount { font-size: 1.25rem; color: var(--text-muted, #6b7280); margin-bottom: 24px; }
-	.bt-error { color: var(--red-600, #dc2626); margin: 12px 0; min-height: 1.5em; }
-	.bt-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
-	.bt-actions .btn-primary { flex: 1; }
-</style>
-
+<!doctype html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{{ title | e }}</title>
+	<style>
+		body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #111827; background: #fff; }
+		.bt-checkout { max-width: 480px; margin: 48px auto; padding: 0 16px; }
+		.bt-checkout h1 { font-size: 1.5rem; margin-bottom: 4px; }
+		.bt-amount { font-size: 1.25rem; color: #6b7280; margin-bottom: 24px; }
+		.bt-error { color: #dc2626; margin: 12px 0; min-height: 1.5em; }
+		.bt-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+		.bt-actions button { flex: 1; padding: 10px 16px; font-size: 1rem; border: 0; border-radius: 6px; background: #111827; color: #fff; cursor: pointer; }
+		.bt-actions button:disabled { opacity: 0.5; cursor: default; }
+	</style>
+</head>
+<body>
 <div class="bt-checkout">
 	{% if error %}
-		<h1>{{ _("Payment unavailable") }}</h1>
-		<p class="bt-error">{{ error }}</p>
-		{% if cancel_url %}<a href="{{ cancel_url }}">{{ _("Back to cart") }}</a>{% endif %}
+		<h1>{{ _("Payment unavailable") | e }}</h1>
+		<p class="bt-error">{{ error | e }}</p>
+		{% if cancel_url %}<a href="{{ cancel_url | e }}">{{ _("Back to cart") | e }}</a>{% endif %}
 	{% else %}
-		<h1>{{ _("Pay by card") }}</h1>
-		<div class="bt-amount">{{ amount }} {{ currency }}</div>
+		<h1>{{ _("Pay by card") | e }}</h1>
+		<div class="bt-amount">{{ amount | e }} {{ currency | e }}</div>
 		<div id="dropin-container"></div>
 		<p class="bt-error" id="bt-error" role="alert"></p>
 		<div class="bt-actions">
-			<button class="btn btn-primary" id="bt-pay" disabled>{{ _("Pay") }} {{ amount }} {{ currency }}</button>
-			<a href="{{ cancel_url }}">{{ _("Cancel") }}</a>
+			<button id="bt-pay" disabled>{{ _("Pay") | e }} {{ amount | e }} {{ currency | e }}</button>
+			<a href="{{ cancel_url | e }}">{{ _("Cancel") | e }}</a>
 		</div>
 	{% endif %}
 </div>
-{% endblock %}
-
-{% block script %}
-{{ super() }}
 {% if not error %}
 <script src="https://js.braintreegateway.com/web/dropin/1.44.1/js/dropin.min.js"></script>
 <script>
@@ -77,11 +77,11 @@
 						return;
 					}
 
-					fetch("/api/method/bwh_payments.bwh_payments.braintree_checkout.pay", {
+					fetch("/api/method/bwh_payments.bwh_payments.doctype.braintree_gateway_settings.braintree_gateway_settings.pay", {
 						method: "POST",
 						headers: {
 							"Content-Type": "application/json",
-							"X-Frappe-CSRF-Token": (window.frappe && frappe.csrf_token) || "",
+							"X-Frappe-CSRF-Token": {{ csrf_token | tojson }},
 						},
 						body: JSON.stringify({ session: {{ session | tojson }}, nonce: payload.nonce }),
 					})
@@ -115,4 +115,5 @@
 })();
 </script>
 {% endif %}
-{% endblock %}
+</body>
+</html>

@@ -188,13 +188,16 @@ An insert that is already settled is an import and fires neither.
   PayU's replies arrive as JSON text, not a JSON content type. A failed attempt stays Pending, because
   the shopper can retry on the same txnid. INR only.
 - **Braintree**: official SDK, no hosted page. `create_session` returns our own random 32-character
-  token as `session_id` and points `redirect_url` at `www/braintree-checkout`, which renders Drop-in.
-  The guest endpoint `braintree_checkout.pay(session, nonce)` charges once under a MariaDB `GET_LOCK`
-  (row locks do not survive `create_request_log`'s commits), records `gateway_transaction_ref`, and
-  syncs the request to Paid itself, so closing the tab still places the order. Sales carry the token
-  as `order_id`; search is filtered to `type == sale` because refunds share it. Before settlement only
-  a full refund (a void, reported `processed`) is possible. Webhooks are verified locally by the SDK
-  with our keys and then ignored.
+  token as `session_id` and points `redirect_url` at our own `start_checkout`, which renders Drop-in
+  (`templates/braintree_checkout.html`), as PayU's does. Both it and the guest endpoint
+  `pay(session, nonce)` refuse a disabled profile or one kept for history. `pay` charges once under a
+  `GET_LOCK` (row locks do not survive `create_request_log`'s commits), records
+  `gateway_transaction_ref`, and syncs the request to Paid itself, so closing the tab still places the
+  order. `GET_LOCK` is MariaDB only, so Braintree checkout does not run on Postgres or SQLite. With 3-D
+  Secure on, the sale is sent with `three_d_secure.required`, so Braintree refuses a nonce posted
+  straight to `pay` without it. Sales carry the token as `order_id`; search is filtered to
+  `type == sale` because refunds share it. Before settlement only a full refund (a void, reported
+  `processed`) is possible. Webhooks are verified locally by the SDK with our keys and then ignored.
 
 ### Money and currency rules
 
