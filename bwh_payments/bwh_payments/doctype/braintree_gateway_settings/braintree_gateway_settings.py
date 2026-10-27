@@ -62,7 +62,7 @@ BRAINTREE_STATUS_MAP = {
 # Money has moved, so a refund is a credit against the sale.
 BRAINTREE_REFUNDABLE_STATUSES = ("settling", "settled")
 # Money has not moved yet, so the only refund Braintree allows is voiding the whole sale.
-BRAINTREE_VOIDABLE_STATUSES = ("authorized", "submitted_for_settlement", "settlement_pending")
+BRAINTREE_VOIDABLE_STATUSES = ("authorized", "submitted_for_settlement")
 BRAINTREE_UNCANCELLABLE_STATUSES = (*BRAINTREE_PAID_STATUSES, "authorizing", "authorized")
 
 # A refund credit's status in the words Gateway Refund understands; anything else stays Pending.

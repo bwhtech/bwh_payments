@@ -296,6 +296,16 @@ class TestBraintreeGatewaySettings(BraintreeTestCase):
 		self.assertEqual(StubBraintreeClient.voids, [])
 		self.assertEqual(StubBraintreeClient.refunds, [])
 
+	def test_a_settlement_pending_card_sale_is_neither_voided_nor_refunded(self):
+		session = frappe.generate_hash(length=32)
+		StubBraintreeClient.add_transaction(session, amount="10.00", status="settlement_pending")
+
+		# Braintree voids a settlement_pending sale only when it was paid with PayPal, never a card.
+		with self.assertRaisesRegex(frappe.ValidationError, "Cannot refund a Braintree payment"):
+			self.get_settings().refund_payment(session, 10, "USD")
+		self.assertEqual(StubBraintreeClient.voids, [])
+		self.assertEqual(StubBraintreeClient.refunds, [])
+
 	def test_nothing_paid_is_never_refunded(self):
 		session = frappe.generate_hash(length=32)
 		StubBraintreeClient.add_transaction(session, status="processor_declined")

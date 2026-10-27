@@ -13,7 +13,7 @@ NO_THREE_D_SECURE_NONCE = "fake-valid-nonce"
 # Braintree's sandbox declines any amount in this range, whatever the card.
 DECLINED_AMOUNTS = (Decimal("2000.00"), Decimal("3000.00"))
 REFUNDABLE_STATUSES = ("settled", "settling")
-VOIDABLE_STATUSES = ("authorized", "submitted_for_settlement", "settlement_pending")
+VOIDABLE_STATUSES = ("authorized", "submitted_for_settlement")
 
 
 class StubBraintreeClient(BaseBraintreeClient):
