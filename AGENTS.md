@@ -5,7 +5,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex and others) 
 ## What this is
 
 `bwh_payments` is a Frappe app (Frappe 16+, Python 3.14) that takes payments through hosted checkout pages
-on Stripe, Razorpay, Telr, Tabby and PayPal, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
+on Stripe, Razorpay, Telr, Tabby, PayPal, PayU and Braintree, behind one gateway-agnostic API. ERPNext is optional. Developer docs:
 https://docs.bwh.tech/bwh-payments/get-started/overview
 
 The repo sits inside a bench at `/Users/harsh/bwh/bwh_payments` (`apps/bwh_payments`); the local site is
@@ -187,6 +187,19 @@ An insert that is already settled is an import and fires neither.
   capture under the same sequential ids. `list_refunds` reads every action by PayU ID (`var2=payuid`).
   PayU's replies arrive as JSON text, not a JSON content type. A failed attempt stays Pending, because
   the shopper can retry on the same txnid. INR only.
+- **Braintree**: official SDK, no hosted page. `create_session` returns our own random 32-character
+  token as `session_id` and points `redirect_url` at our own `start_checkout`, which renders Drop-in
+  (`templates/braintree_checkout.html`), as PayU's does. Both it and the guest endpoint
+  `pay(session, nonce)` refuse a disabled profile or one kept for history. `pay` charges once under a
+  `GET_LOCK` (row locks do not survive `create_request_log`'s commits), records
+  `gateway_transaction_ref`, and marks the request Paid from the sale itself, so closing the tab still
+  places the order. Search can trail a fresh sale, so `pay` never charges a request that has a
+  `gateway_transaction_ref`, and `release_if_unpaid` never cancels one. `GET_LOCK` is MariaDB only, so
+  Braintree checkout does not run on Postgres or SQLite. With 3-D Secure on, the sale is sent with
+  `three_d_secure.required`, so Braintree refuses a nonce posted straight to `pay` without it. Sales
+  carry the token as `order_id`; search is filtered to `type == sale` because refunds share it. Before
+  settlement only a full refund (a void, reported `processed`) is possible. Webhooks are verified
+  locally by the SDK with our keys and then ignored.
 
 ### Money and currency rules
 
