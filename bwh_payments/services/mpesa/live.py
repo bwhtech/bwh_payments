@@ -14,8 +14,9 @@ from bwh_payments.services.mpesa.base import BaseMpesaClient, MpesaReversal, Mpe
 MPESA_SANDBOX_URL = "https://sandbox.safaricom.co.ke"
 MPESA_LIVE_URL = "https://api.safaricom.co.ke"
 MPESA_TIMEZONE = ZoneInfo("Africa/Nairobi")
-# Daraja answers an STK query with this error until the shopper has answered the prompt.
-MPESA_STILL_PROCESSING_ERROR = "500.001.1001"
+# Daraja's HTTP 500 for a refusal, not an outage: wrong credentials, or an STK query before the shopper
+# has answered the prompt.
+MPESA_REFUSAL_ERROR = "500.001.1001"
 MPESA_ACCEPTED_RESPONSE_CODE = "0"
 SETTINGS_DOCTYPE = "Mpesa Gateway Settings"
 
@@ -85,8 +86,8 @@ class LiveMpesaClient(BaseMpesaClient):
 		try:
 			response = make_post_request(url, json=payload, headers=headers)
 		except Exception as exception:
-			if still_processing_is_empty and read_mpesa_error_code(exception) == MPESA_STILL_PROCESSING_ERROR:
-				log_request(url, output={"errorCode": MPESA_STILL_PROCESSING_ERROR})
+			if still_processing_is_empty and read_mpesa_error_code(exception) == MPESA_REFUSAL_ERROR:
+				log_request(url, output={"errorCode": MPESA_REFUSAL_ERROR})
 				return {}
 			throw_request_error(url, exception)
 		return read_response(url, response)
@@ -103,6 +104,8 @@ def is_transient_error(exception: Exception) -> bool:
 	response = getattr(exception, "response", None)
 	if response is None:
 		return isinstance(exception, RequestException)
+	if read_mpesa_error_code(exception) == MPESA_REFUSAL_ERROR:
+		return False
 	return response.status_code >= 500 or response.status_code == 429
 
 

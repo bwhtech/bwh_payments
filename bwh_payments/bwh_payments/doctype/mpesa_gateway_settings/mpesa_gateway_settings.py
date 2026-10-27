@@ -84,11 +84,12 @@ class MpesaGatewaySettings(Document, PaymentGatewayBase):
 		if frappe.in_test:
 			return StubMpesaClient()
 
+		# A stray space from pasting the keys reaches Daraja only as "Wrong credentials".
 		return LiveMpesaClient(
-			self.consumer_key,
-			self.get_password("consumer_secret"),
-			self.business_shortcode,
-			self.get_password("online_passkey"),
+			self.consumer_key.strip(),
+			self.get_password("consumer_secret").strip(),
+			self.business_shortcode.strip(),
+			self.get_password("online_passkey").strip(),
 			bool(self.sandbox),
 			self.initiator_name,
 			self.get_password("security_credential", raise_exception=False),
