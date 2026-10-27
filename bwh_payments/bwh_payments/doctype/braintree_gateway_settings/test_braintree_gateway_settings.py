@@ -1,6 +1,8 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # See license.txt
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
@@ -245,13 +247,15 @@ class TestBraintreeGatewaySettings(BraintreeTestCase):
 		self.assertEqual(self.get_settings().get_payment_status(session), "Cancelled")
 		self.assertIn(sale_id, StubBraintreeClient.transactions)
 
-	def test_a_fresh_sale_missing_from_search_is_found_through_the_request(self):
+	def test_release_if_unpaid_keeps_a_charged_request_search_has_not_caught_up_with(self):
 		payment_request = make_braintree_payment_request(20)
 		sale_id = StubBraintreeClient.add_transaction(payment_request.order_ref)
 		StubBraintreeClient.unindexed.add(sale_id)
 		payment_request.db_set("gateway_transaction_ref", sale_id)
 
-		self.assertEqual(self.get_settings().get_payment_status(payment_request.order_ref), "Paid")
+		self.assertFalse(payment_request.release_if_unpaid())
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Pending")
 
 	def test_a_settled_sale_takes_partial_refunds_up_to_its_amount(self):
 		settings = self.get_settings()
@@ -314,6 +318,18 @@ class TestBraintreeGatewaySettings(BraintreeTestCase):
 		self.assertFalse(payment_request.release_if_unpaid())
 		payment_request.reload()
 		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_failed_search_releases_the_session_lock(self):
+		session = frappe.generate_hash(length=32)
+
+		with (
+			patch.object(StubBraintreeClient, "search_sales", side_effect=frappe.ValidationError),
+			self.assertRaises(frappe.ValidationError),
+		):
+			self.get_settings().cancel_session(session)
+
+		lock_name = braintree_gateway_settings.get_session_lock_name(session)
+		self.assertEqual(frappe.db.sql("SELECT IS_FREE_LOCK(%s)", (lock_name,))[0][0], 1)
 
 	def test_a_settled_refund_is_recorded_as_processed_through_the_request(self):
 		payment_request = make_braintree_payment_request(20)

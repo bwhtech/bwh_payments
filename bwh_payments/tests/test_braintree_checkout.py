@@ -64,7 +64,9 @@ class TestBraintreePay(BraintreeTestCase):
 		self.assertEqual(payment_request.status, "Pending")
 		self.assertTrue(payment_request.gateway_transaction_ref)
 
-		payment_request.sync_status()
+		# The shopper retries before Braintree's search shows the sale.
+		pay(payment_request.order_ref, VALID_NONCE)
+		payment_request.reload()
 		self.assertEqual(payment_request.status, "Paid")
 		self.assertEqual(len(StubBraintreeClient.sales), 1)
 

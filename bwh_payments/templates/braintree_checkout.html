@@ -53,7 +53,8 @@
 		},
 		function (createError, instance) {
 			if (createError) {
-				showError({{ _("The card form could not load. Please refresh the page.") | tojson }});
+				// Not showError: the Pay button has no handler without Drop-in, so it stays disabled.
+				errorBox.textContent = {{ _("The card form could not load. Please refresh the page.") | tojson }};
 				return;
 			}
 			payButton.disabled = false;
@@ -71,7 +72,8 @@
 						showError(requestError.message);
 						return;
 					}
-					if (threeDSecure && payload.liabilityShifted === false && payload.liabilityShiftPossible) {
+					// The sale requires the liability shift, so Braintree would decline this card anyway.
+					if (threeDSecure && !payload.liabilityShifted) {
 						instance.clearSelectedPaymentMethod();
 						showError({{ _("Card verification failed. Please try again or use another card.") | tojson }});
 						return;

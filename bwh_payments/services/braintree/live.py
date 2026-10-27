@@ -35,6 +35,12 @@ class LiveBraintreeClient(BaseBraintreeClient):
 		endpoint = "client_token.generate"
 		try:
 			token = self.gateway.client_token.generate({"merchant_account_id": merchant_account_id})
+		except TRANSIENT_ERRORS as exception:
+			description = exception.__class__.__name__
+			log_request(endpoint, error=description)
+			frappe.throw(
+				_("Braintree rejected the request: {0}").format(description), exc=GatewayUnavailableError
+			)
 		except BraintreeError:
 			# AuthenticationError and friends carry no message; the keys are the only likely cause.
 			log_request(endpoint, error="credentials rejected")

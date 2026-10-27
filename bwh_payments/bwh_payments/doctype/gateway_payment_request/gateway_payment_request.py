@@ -180,7 +180,8 @@ class GatewayPaymentRequest(Document):
 			return False
 
 		self.lock_row()
-		if self.status != "Pending":
+		# A recorded transaction means the shopper was charged, even if the request is not Paid yet.
+		if self.status != "Pending" or self.gateway_transaction_ref:
 			return False
 
 		self.status = "Cancelled"

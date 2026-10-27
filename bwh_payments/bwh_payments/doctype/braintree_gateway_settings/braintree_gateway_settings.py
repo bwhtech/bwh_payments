@@ -208,7 +208,7 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 		)
 
 	def get_payment_status(self, session_id: str) -> str:
-		transactions = self.get_transactions(session_id)
+		transactions = self.get_client().search_sales(session_id)
 		if any(transaction.status in BRAINTREE_PAID_STATUSES for transaction in transactions):
 			return "Paid"
 		if not transactions:
@@ -222,11 +222,13 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 		# Our page is the only way to pay, so holding the session lock until the caller commits its
 		# Cancelled status means `pay()` cannot charge in between.
 		acquire_session_lock(session_id)
-		cancellable = not any(
-			transaction.status in BRAINTREE_UNCANCELLABLE_STATUSES
-			for transaction in self.get_transactions(session_id)
-		)
-		if not cancellable:
+		try:
+			transactions = self.get_client().search_sales(session_id)
+		except Exception:
+			release_session_lock(session_id)
+			raise
+
+		if any(transaction.status in BRAINTREE_UNCANCELLABLE_STATUSES for transaction in transactions):
 			release_session_lock(session_id)
 			return False
 
@@ -292,28 +294,10 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 		frappe.throw(_("No successful Braintree payment found for this request"))
 
 	def find_paid_sale(self, session_id: str) -> BraintreeTransaction | None:
-		for transaction in self.get_transactions(session_id):
+		for transaction in self.get_client().search_sales(session_id):
 			if transaction.status in BRAINTREE_PAID_STATUSES:
 				return transaction
 		return None
-
-	def get_transactions(self, session_id: str) -> list[BraintreeTransaction]:
-		"""Every sale on this session, declines included.
-
-		Search can trail a fresh sale by a few seconds, so the sale `pay()` recorded is also fetched directly.
-		`cancel_session` and `sync_status` get only the session id, and without it a cancel in that window
-		would cancel a request that was charged.
-		"""
-		client = self.get_client()
-		transactions = {transaction.id: transaction for transaction in client.search_sales(session_id)}
-
-		known_id = frappe.db.get_value(
-			"Gateway Payment Request", {"order_ref": session_id}, "gateway_transaction_ref"
-		)
-		if known_id and known_id not in transactions:
-			transactions[known_id] = client.find_transaction(known_id)
-
-		return list(transactions.values())
 
 
 def acquire_session_lock(session_id: str):
@@ -433,8 +417,10 @@ def charge_request(payment_request, nonce: str) -> dict:
 		frappe.throw(_("This payment is no longer open."))
 
 	settings = frappe.get_single(SETTINGS_DOCTYPE)
-	# A sale an earlier attempt made, if the shopper retried before the page caught up.
-	if settings.get_payment_status(payment_request.order_ref) != "Paid":
+	# A sale an earlier attempt made, if its order failed or the shopper retried before the page caught up.
+	if not payment_request.gateway_transaction_ref and (
+		settings.get_payment_status(payment_request.order_ref) != "Paid"
+	):
 		result = settings.charge(
 			payment_request.order_ref, payment_request.amount, payment_request.currency_code, nonce
 		)
@@ -448,8 +434,12 @@ def charge_request(payment_request, nonce: str) -> dict:
 
 	# Placed here rather than by the return page, so closing the tab after paying still places the order.
 	try:
-		# As the shopper, not Administrator: the order's app elevates itself and stamps the shopper as owner.
-		payment_request.sync_status()
+		# Paid from the sale itself, since search may not show it yet. As the shopper, not Administrator:
+		# the order's app elevates itself and stamps the shopper as owner.
+		payment_request.lock_row()
+		if payment_request.status == "Pending":
+			payment_request.status = "Paid"
+			payment_request.save(ignore_permissions=True)
 	except Exception:
 		# The shopper has paid, so they still go to the confirmation page, whose sync retries the order.
 		frappe.db.rollback()
