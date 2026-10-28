@@ -4,7 +4,13 @@ from typing import ClassVar
 import frappe
 from frappe import _
 
-from bwh_payments.services.mpesa.base import BaseMpesaClient, MpesaReversal, MpesaStkPush, MpesaStkQuery
+from bwh_payments.services.mpesa.base import (
+	BaseMpesaClient,
+	MpesaReversal,
+	MpesaStillProcessingError,
+	MpesaStkPush,
+	MpesaStkQuery,
+)
 
 
 class StubMpesaClient(BaseMpesaClient):
@@ -40,12 +46,18 @@ class StubMpesaClient(BaseMpesaClient):
 
 	def send_stk_push(self, payload: dict) -> MpesaStkPush:
 		self.created_pushes.append(payload)
-		return MpesaStkPush(checkout_request_id=self.add_push(), merchant_request_id="29115-1-1")
+		return MpesaStkPush(checkout_request_id=self.add_push())
 
 	def query_stk_push(self, checkout_request_id: str) -> MpesaStkQuery:
 		if checkout_request_id not in self.pushes:
 			frappe.throw(_("M-Pesa rejected the request: {0}").format("Invalid CheckoutRequestID"))
-		return MpesaStkQuery(result_code=self.pushes[checkout_request_id])
+		result_code = self.pushes[checkout_request_id]
+		if result_code is None:
+			frappe.throw(
+				_("M-Pesa rejected the request: {0}").format("The transaction is being processed"),
+				exc=MpesaStillProcessingError,
+			)
+		return MpesaStkQuery(result_code=result_code)
 
 	def reverse_transaction(self, payload: dict) -> MpesaReversal:
 		self.created_reversals.append(payload)

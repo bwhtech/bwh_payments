@@ -330,11 +330,11 @@ class TestMpesaGatewaySettings(MpesaTestCase):
 	def test_a_refund_reverses_the_receipt_in_whole_shillings(self):
 		payment_request = self.make_paid_request("SRECEIPT01")
 
-		refund = payment_request.create_refund(40)
+		refund = payment_request.create_refund()
 
 		reversal = StubMpesaClient.created_reversals[-1]
 		self.assertEqual(reversal["TransactionID"], "SRECEIPT01")
-		self.assertEqual(reversal["Amount"], 40)
+		self.assertEqual(reversal["Amount"], 100)
 		self.assertEqual(reversal["CommandID"], "TransactionReversal")
 		self.assertEqual(reversal["ReceiverParty"], "174379")
 		self.assertIn(f"token={MPESA_CALLBACK_TOKEN}", reversal["ResultURL"])
@@ -347,15 +347,18 @@ class TestMpesaGatewaySettings(MpesaTestCase):
 		payment_request.sync_status()
 
 		with self.assertRaises(frappe.ValidationError):
+			payment_request.create_refund()
+
+		self.assertEqual(StubMpesaClient.created_reversals, [])
+
+	def test_a_partial_refund_is_refused_because_a_reversal_returns_the_whole_payment(self):
+		payment_request = self.make_paid_request()
+
+		with self.assertRaises(frappe.ValidationError):
 			payment_request.create_refund(40)
 
 		self.assertEqual(StubMpesaClient.created_reversals, [])
-
-	def test_a_refund_in_cents_is_refused(self):
-		with self.assertRaises(frappe.ValidationError):
-			self.get_settings().refund_payment(self.make_paid_request().order_ref, 10.5, "KES")
-
-		self.assertEqual(StubMpesaClient.created_reversals, [])
+		self.assertEqual(payment_request.get_remaining_refundable_amount(), 100)
 
 	def test_a_security_credential_as_long_as_daraja_issues_is_kept(self):
 		settings = self.get_settings()

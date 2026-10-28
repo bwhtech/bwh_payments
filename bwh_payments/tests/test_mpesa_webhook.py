@@ -109,7 +109,7 @@ class TestMpesaWebhookSpine(MpesaTestCase):
 
 	def test_a_successful_reversal_result_settles_the_pending_refund(self):
 		payment_request = self.make_paid_request()
-		refund = payment_request.create_refund(40)
+		refund = payment_request.create_refund()
 
 		response = self.post_callback(build_reversal_result(refund.refund_id))
 
@@ -117,12 +117,12 @@ class TestMpesaWebhookSpine(MpesaTestCase):
 		refund.reload()
 		payment_request.reload()
 		self.assertEqual(refund.status, "Processed")
-		self.assertEqual(flt(payment_request.refund_amount), 40)
-		self.assertEqual(payment_request.status, "Partially Refunded")
+		self.assertEqual(flt(payment_request.refund_amount), 100)
+		self.assertEqual(payment_request.status, "Refunded")
 
 	def test_a_failed_reversal_result_frees_the_amount_again(self):
 		payment_request = self.make_paid_request()
-		refund = payment_request.create_refund(100)
+		refund = payment_request.create_refund()
 
 		self.post_callback(build_reversal_result(refund.refund_id, result_code=2001))
 

@@ -207,7 +207,10 @@ An insert that is already settled is an import and fires neither.
   callback URL per request and does not sign callbacks, so the URL carries `callback_token` (checked in
   constant time, plus an optional source-IP allowlist). Only the paid callback names the M-Pesa receipt,
   so it arrives as the event's `transaction_ref` and is kept in `gateway_transaction_ref`; refunds are
-  transaction reversals against that receipt, settled by the reversal result callback.
+  transaction reversals against that receipt, settled by the reversal result callback. A reversal returns
+  the whole payment, so a partial refund is refused. An STK query asked before the shopper answers is a
+  `500.001.1001` refusal, the same code as wrong credentials, so the live client tells them apart by
+  message and raises `MpesaStillProcessingError`, which `get_payment_status` reads as Pending.
 
 ### Money and currency rules
 

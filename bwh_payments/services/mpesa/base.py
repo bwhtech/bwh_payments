@@ -1,8 +1,13 @@
 from abc import ABC, abstractmethod
 
+import frappe
 from pydantic import ConfigDict, Field
 
 from bwh_payments.services import GatewayModel
+
+
+class MpesaStillProcessingError(frappe.ValidationError):
+	"""Daraja's answer to an STK query asked before the prompt has a result."""
 
 
 class MpesaModel(GatewayModel):
@@ -13,18 +18,14 @@ class MpesaModel(GatewayModel):
 
 class MpesaStkPush(MpesaModel):
 	checkout_request_id: str = Field(alias="CheckoutRequestID")
-	merchant_request_id: str | None = Field(default=None, alias="MerchantRequestID")
 
 
 class MpesaStkQuery(MpesaModel):
-	# None while the shopper has not answered the prompt yet.
-	result_code: str | None = Field(default=None, alias="ResultCode")
-	result_desc: str | None = Field(default=None, alias="ResultDesc")
+	result_code: str = Field(alias="ResultCode")
 
 
 class MpesaReversal(MpesaModel):
 	conversation_id: str = Field(alias="ConversationID")
-	originator_conversation_id: str | None = Field(default=None, alias="OriginatorConversationID")
 
 
 class BaseMpesaClient(ABC):
@@ -38,7 +39,8 @@ class BaseMpesaClient(ABC):
 	def send_stk_push(self, payload: dict) -> MpesaStkPush: ...
 
 	@abstractmethod
-	def query_stk_push(self, checkout_request_id: str) -> MpesaStkQuery: ...
+	def query_stk_push(self, checkout_request_id: str) -> MpesaStkQuery:
+		"""Raises `MpesaStillProcessingError` while the shopper has not answered the prompt."""
 
 	@abstractmethod
 	def reverse_transaction(self, payload: dict) -> MpesaReversal:

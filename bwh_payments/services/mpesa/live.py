@@ -9,14 +9,21 @@ from frappe.integrations.utils import create_request_log, make_get_request, make
 from requests import RequestException
 
 from bwh_payments.services import GatewayUnavailableError
-from bwh_payments.services.mpesa.base import BaseMpesaClient, MpesaReversal, MpesaStkPush, MpesaStkQuery
+from bwh_payments.services.mpesa.base import (
+	BaseMpesaClient,
+	MpesaReversal,
+	MpesaStillProcessingError,
+	MpesaStkPush,
+	MpesaStkQuery,
+)
 
 MPESA_SANDBOX_URL = "https://sandbox.safaricom.co.ke"
 MPESA_LIVE_URL = "https://api.safaricom.co.ke"
 MPESA_TIMEZONE = ZoneInfo("Africa/Nairobi")
-# Daraja's HTTP 500 for a refusal, not an outage: wrong credentials, or an STK query before the shopper
-# has answered the prompt.
+# Daraja's HTTP 500 for a refusal, not an outage. It covers wrong credentials too, so only the message
+# tells an STK query asked too early apart. The sandbox says "does not exist" until the push is recorded.
 MPESA_REFUSAL_ERROR = "500.001.1001"
+MPESA_STILL_PROCESSING_MESSAGES = ("the transaction is being processed", "the transaction does not exist")
 MPESA_ACCEPTED_RESPONSE_CODE = "0"
 SETTINGS_DOCTYPE = "Mpesa Gateway Settings"
 
@@ -47,9 +54,7 @@ class LiveMpesaClient(BaseMpesaClient):
 
 	def query_stk_push(self, checkout_request_id: str) -> MpesaStkQuery:
 		payload = {**self.get_stk_credentials(), "CheckoutRequestID": checkout_request_id}
-		return MpesaStkQuery.model_validate(
-			self.post("/mpesa/stkpushquery/v1/query", payload, still_processing_is_empty=True)
-		)
+		return MpesaStkQuery.model_validate(self.post("/mpesa/stkpushquery/v1/query", payload))
 
 	def reverse_transaction(self, payload: dict) -> MpesaReversal:
 		if not (self.initiator_name and self.security_credential):
@@ -80,15 +85,12 @@ class LiveMpesaClient(BaseMpesaClient):
 		self.access_token = response["access_token"]
 		return self.access_token
 
-	def post(self, endpoint: str, payload: dict, still_processing_is_empty: bool = False) -> dict:
+	def post(self, endpoint: str, payload: dict) -> dict:
 		url = f"{self.base_url}{endpoint}"
 		headers = {"Authorization": f"Bearer {self.get_access_token()}", "Content-Type": "application/json"}
 		try:
 			response = make_post_request(url, json=payload, headers=headers)
 		except Exception as exception:
-			if still_processing_is_empty and read_mpesa_error_code(exception) == MPESA_REFUSAL_ERROR:
-				log_request(url, output={"errorCode": MPESA_REFUSAL_ERROR})
-				return {}
 			throw_request_error(url, exception)
 		return read_response(url, response)
 
@@ -96,8 +98,20 @@ class LiveMpesaClient(BaseMpesaClient):
 def throw_request_error(url: str, exception: Exception) -> NoReturn:
 	description = read_mpesa_error(exception)
 	log_request(url, error=description or exception)
-	exc = GatewayUnavailableError if is_transient_error(exception) else frappe.ValidationError
+	if is_still_processing(exception):
+		exc = MpesaStillProcessingError
+	elif is_transient_error(exception):
+		exc = GatewayUnavailableError
+	else:
+		exc = frappe.ValidationError
 	frappe.throw(_("M-Pesa rejected the request: {0}").format(description or _("unknown error")), exc=exc)
+
+
+def is_still_processing(exception: Exception) -> bool:
+	message = (read_mpesa_error(exception) or "").strip().lower()
+	return (
+		read_mpesa_error_code(exception) == MPESA_REFUSAL_ERROR and message in MPESA_STILL_PROCESSING_MESSAGES
+	)
 
 
 def is_transient_error(exception: Exception) -> bool:
