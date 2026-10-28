@@ -126,7 +126,8 @@ An insert that is already settled is an import and fires neither.
      logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
      queues `process_webhook`. The job applies it as Administrator (a `sync_status` event runs
      `sync_status` on a Pending request instead); a failure is rolled back to a
-     savepoint, logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
+     savepoint by `rollback_on_error`, which also drops the commit callbacks the failed work queued (Frappe's
+     savepoint rollback keeps them), logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
      are raised as `RetryBackgroundJobError`, because Frappe's job runner does not retry the
      `QueryDeadlockError` / `QueryTimeoutError` it wraps them in. A live client raises
      `services.GatewayUnavailableError` for a 5xx, a 429 or a dropped connection; the job marks the log
