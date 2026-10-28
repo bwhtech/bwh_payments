@@ -1,0 +1,209 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-10-19 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "column_break_mode",
+  "sandbox",
+  "section_break_keys",
+  "consumer_key",
+  "business_shortcode",
+  "transaction_type",
+  "till_number",
+  "column_break_keys",
+  "consumer_secret",
+  "online_passkey",
+  "section_break_reversal",
+  "initiator_name",
+  "column_break_reversal",
+  "security_credential",
+  "section_break_webhook",
+  "callback_token",
+  "column_break_webhook",
+  "webhook_ips",
+  "section_break_urls",
+  "success_url",
+  "column_break_urls",
+  "failure_url",
+  "column_break_urls_two",
+  "cancelled_url"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "column_break_mode",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "Sends every request to Safaricom's Daraja sandbox. Turn off once the keys are for your live Daraja app.",
+   "fieldname": "sandbox",
+   "fieldtype": "Check",
+   "label": "Sandbox"
+  },
+  {
+   "fieldname": "section_break_keys",
+   "fieldtype": "Section Break",
+   "label": "Daraja API (M-Pesa Express)"
+  },
+  {
+   "fieldname": "consumer_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Consumer Key",
+   "reqd": 1
+  },
+  {
+   "description": "The Paybill number, or for Buy Goods the store (head office) number the passkey belongs to.",
+   "fieldname": "business_shortcode",
+   "fieldtype": "Data",
+   "label": "Business Shortcode",
+   "reqd": 1
+  },
+  {
+   "default": "Pay Bill",
+   "fieldname": "transaction_type",
+   "fieldtype": "Select",
+   "label": "Transaction Type",
+   "options": "Pay Bill\nBuy Goods",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.transaction_type == \"Buy Goods\"",
+   "description": "The till that receives the money.",
+   "fieldname": "till_number",
+   "fieldtype": "Data",
+   "label": "Till Number",
+   "mandatory_depends_on": "eval:doc.transaction_type == \"Buy Goods\""
+  },
+  {
+   "fieldname": "column_break_keys",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "consumer_secret",
+   "fieldtype": "Password",
+   "in_list_view": 1,
+   "label": "Consumer Secret",
+   "reqd": 1
+  },
+  {
+   "fieldname": "online_passkey",
+   "fieldtype": "Password",
+   "label": "Online Passkey",
+   "reqd": 1
+  },
+  {
+   "description": "Needed only for refunds, which M-Pesa makes as transaction reversals.",
+   "fieldname": "section_break_reversal",
+   "fieldtype": "Section Break",
+   "label": "Refunds"
+  },
+  {
+   "description": "An API operator on the M-PESA Org Portal with the reversal role.",
+   "fieldname": "initiator_name",
+   "fieldtype": "Data",
+   "label": "Initiator Name"
+  },
+  {
+   "fieldname": "column_break_reversal",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "The initiator's password encrypted with Safaricom's certificate, as the Daraja portal generates it.",
+   "fieldname": "security_credential",
+   "fieldtype": "Password",
+   "label": "Security Credential",
+   "length": 1000
+  },
+  {
+   "fieldname": "section_break_webhook",
+   "fieldtype": "Section Break",
+   "label": "Callbacks"
+  },
+  {
+   "description": "Generated on save and added to every callback URL sent to M-Pesa, which does not sign its callbacks. Clear it and save to stop accepting callbacks for earlier payments.",
+   "fieldname": "callback_token",
+   "fieldtype": "Password",
+   "label": "Callback Token"
+  },
+  {
+   "fieldname": "column_break_webhook",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Optional. One IP address per line; when set, callbacks from any other address are rejected. Safaricom publishes the addresses its callbacks come from.",
+   "fieldname": "webhook_ips",
+   "fieldtype": "Small Text",
+   "label": "Callback IP Allowlist"
+  },
+  {
+   "fieldname": "section_break_urls",
+   "fieldtype": "Section Break",
+   "label": "Redirect URLs"
+  },
+  {
+   "description": "M-Pesa has no checkout page: the shopper gets a PIN prompt on their phone and is sent here straight away, while the payment is still Pending.",
+   "fieldname": "success_url",
+   "fieldtype": "Data",
+   "label": "Success URL",
+   "options": "URL"
+  },
+  {
+   "fieldname": "column_break_urls",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "M-Pesa never redirects here; it is the URL the storefront uses when a payment fails.",
+   "fieldname": "failure_url",
+   "fieldtype": "Data",
+   "label": "Failure URL",
+   "options": "URL"
+  },
+  {
+   "fieldname": "column_break_urls_two",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "M-Pesa never redirects here; it is the URL the storefront uses when a shopper abandons checkout.",
+   "fieldname": "cancelled_url",
+   "fieldtype": "Data",
+   "label": "Cancelled URL",
+   "options": "URL"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BWH Payments",
+ "name": "Mpesa Gateway Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -14,12 +14,13 @@
 	<img src=".github/logos/tabby.svg" alt="Tabby" height="40" />
 	<img src=".github/logos/paypal.svg" alt="PayPal" height="40" />
 	<img src=".github/logos/braintree.svg" alt="Braintree" height="40" />
+	<img src=".github/logos/mpesa.svg" alt="M-Pesa" height="40" />
 </p>
 
 </div>
 
-BWH Payments lets a Frappe app take payments through Stripe, Razorpay, Telr, Tabby, PayPal, PayU or Braintree,
-using the same code for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payments/get-started/overview)**.
+BWH Payments lets a Frappe app take payments through Stripe, Razorpay, Telr, Tabby, PayPal, PayU, Braintree or
+M-Pesa, using the same code for every gateway. Read the **[developer docs](https://docs.bwh.tech/bwh-payments/get-started/overview)**.
 
 ### Gateways
 
@@ -30,6 +31,7 @@ using the same code for every gateway. Read the **[developer docs](https://docs.
 - **PayPal**: PayPal wallet payments in the currencies PayPal settles
 - **PayU**: cards, UPI, netbanking and wallets in India (INR)
 - **Braintree**: cards with 3-D Secure, on a Drop-in checkout page this app serves
+- **M-Pesa**: mobile money in Kenya, through a PIN prompt on the shopper's phone (M-Pesa Express)
 
 ### Features
 
