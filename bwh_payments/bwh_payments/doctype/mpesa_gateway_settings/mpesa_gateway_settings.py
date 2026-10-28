@@ -201,6 +201,14 @@ class MpesaGatewaySettings(Document, PaymentGatewayBase):
 			)
 
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
+		"""Queue a reversal of the whole payment. Only the result callback settles it.
+
+		Daraja has no synchronous status call for a reversal, so there is no `get_refund_status`. When the
+		result never arrives, the Gateway Refund stays Pending and keeps its amount reserved, so it cannot
+		be refunded twice. Check the reversal in the M-PESA Org Portal, then settle it as a System Manager
+		in `bench console`: `frappe.get_doc("Gateway Refund", name).apply_gateway_status("processed")` (or
+		`"failed"`), then `frappe.db.commit()`.
+		"""
 		self.validate_currency(currency)
 
 		# Only the STK callback names the M-Pesa receipt; Daraja cannot be asked for it later.

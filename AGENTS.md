@@ -208,7 +208,10 @@ An insert that is already settled is an import and fires neither.
   constant time, plus an optional source-IP allowlist). Only the paid callback names the M-Pesa receipt,
   so it arrives as the event's `transaction_ref` and is kept in `gateway_transaction_ref`; refunds are
   transaction reversals against that receipt, settled by the reversal result callback. A reversal returns
-  the whole payment, so a partial refund is refused. An STK query asked before the shopper answers is a
+  the whole payment, so a partial refund is refused. Daraja has no synchronous reversal status, so a
+  reversal whose result never arrives (a queue timeout too, if its body names no `ConversationID`) stays
+  Pending with its amount reserved; a System Manager settles it after checking the M-PESA Org Portal with
+  `apply_gateway_status("processed" | "failed")` on the Gateway Refund. An STK query asked before the shopper answers is a
   `500.001.1001` refusal, the same code as wrong credentials, so the live client tells them apart by
   message and raises `MpesaStillProcessingError`, which `get_payment_status` reads as Pending.
 
