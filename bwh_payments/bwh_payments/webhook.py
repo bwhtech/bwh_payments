@@ -1,7 +1,10 @@
+from contextlib import contextmanager
+
 import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log
 from frappe.rate_limiter import rate_limit
+from frappe.utils import CallbackManager
 
 from bwh_payments.base_class import WebhookEvent
 from bwh_payments.bwh_payments.utils import run_as_administrator
@@ -9,6 +12,7 @@ from bwh_payments.services import GatewayUnavailableError
 
 WEBHOOK_ACCEPTED = {"status": "ok"}
 WEBHOOK_SAVEPOINT = "bwh_payments_webhook"
+TRANSACTION_CALLBACKS = ("before_commit", "after_commit", "before_rollback", "after_rollback")
 
 
 # nosemgrep: guest-whitelisted-method  # gateways post unauthenticated; each verifier checks the signature
@@ -103,27 +107,53 @@ def process_webhook(integration_request: str):
 	log = frappe.get_doc("Integration Request", integration_request)
 	event = WebhookEvent.model_validate(frappe.parse_json(log.data))
 
-	frappe.db.savepoint(WEBHOOK_SAVEPOINT)
 	try:
-		payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
-		apply_event_as_administrator(payment_request, event)
+		with rollback_on_error(WEBHOOK_SAVEPOINT):
+			payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
+			apply_event_as_administrator(payment_request, event)
 	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError) as error:
-		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		# Frappe's job runner retries only RetryBackgroundJobError, not the DB errors it wraps.
 		raise frappe.RetryBackgroundJobError from error
 	except GatewayUnavailableError as error:
-		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		# Failed and committed first, so it stays retryable by hand once Frappe's own retries run out.
 		log.handle_failure({"error": repr(error)})
 		frappe.db.commit()  # nosemgrep
 		raise frappe.RetryBackgroundJobError from error
 	except Exception as error:
-		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		frappe.log_error(title=f"{log.integration_request_service} could not be applied")
 		log.handle_failure({"error": repr(error)})
 		return
 
 	log.db_set("status", "Completed")
+
+
+@contextmanager
+def rollback_on_error(save_point: str):
+	"""Roll the block back to a savepoint on error, together with the transaction callbacks it added.
+
+	Frappe's savepoint rollback keeps those callbacks, so the jobs, emails and events queued for an order
+	that was rolled back would still go out on the next commit, such as the one marking the webhook Failed.
+	"""
+	outer = {name: getattr(frappe.db, name) for name in TRANSACTION_CALLBACKS}
+	for name in TRANSACTION_CALLBACKS:
+		setattr(frappe.db, name, CallbackManager())
+	frappe.db.savepoint(save_point)
+
+	succeeded = False
+	try:
+		yield
+		succeeded = True
+	except BaseException:
+		frappe.db.before_rollback.run()
+		frappe.db.rollback(save_point=save_point)
+		frappe.db.after_rollback.run()
+		raise
+	finally:
+		for name, callbacks in outer.items():
+			inner = getattr(frappe.db, name)
+			setattr(frappe.db, name, callbacks)
+			if succeeded:
+				callbacks.add(inner.run)
 
 
 @frappe.whitelist(methods=["POST"])
