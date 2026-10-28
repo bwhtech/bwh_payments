@@ -303,8 +303,12 @@ class TestMpesaGatewaySettings(MpesaTestCase):
 		self.assertEqual(self.get_payment_status("1"), "Not Paid")
 		self.assertEqual(self.get_payment_status("2001"), "Not Paid")
 
+	def test_a_number_that_cannot_pay_is_not_paid(self):
+		self.assertEqual(self.get_payment_status("11"), "Not Paid")
+
 	def test_an_unrecognised_result_code_stays_pending(self):
 		self.assertEqual(self.get_payment_status("4242"), "Pending")
+		self.assertEqual(self.get_payment_status("4999"), "Pending")
 		self.assertEqual(self.get_payment_status(""), "Pending")
 
 	def test_a_pull_settles_the_request_without_a_receipt(self):
@@ -387,6 +391,11 @@ class TestMpesaCallbackVerification(MpesaTestCase):
 
 		self.assertEqual(result.status, "Cancelled")
 		self.assertIsNone(result.transaction_ref)
+
+	def test_a_callback_with_an_unrecognised_result_code_is_not_paid(self):
+		result = self.handle(build_stk_callback("ws_CO_unlisted", result_code=4242))
+
+		self.assertEqual(result.status, "Not Paid")
 
 	def test_a_wrong_token_is_rejected(self):
 		with self.assertRaises(frappe.ValidationError):

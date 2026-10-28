@@ -24,6 +24,7 @@ WEBHOOK_ENDPOINT = "/api/method/bwh_payments.bwh_payments.webhook.handle"
 MPESA_RESULT_STATUS_MAP = {
 	"0": "Paid",
 	"1": "Not Paid",  # insufficient balance
+	"11": "Not Paid",  # the number cannot pay (DebitParty in an invalid state)
 	"1001": "Not Paid",  # another transaction is in progress for this subscriber
 	"1019": "Expired",
 	"1025": "Not Paid",  # the prompt could not be sent
@@ -251,10 +252,12 @@ def get_mpesa_phone_number(phone: str | None) -> int:
 	return int(digits)
 
 
-def read_result_status(result_code) -> str:
+def read_result_status(result_code, is_final: bool = False) -> str:
 	if result_code is None:
 		return "Pending"
-	return MPESA_RESULT_STATUS_MAP.get(str(result_code).strip(), "Pending")
+	# A callback comes only once the prompt is over, so any code it carries is final. A query can
+	# still answer with an unlisted code while the shopper is entering their PIN (4999).
+	return MPESA_RESULT_STATUS_MAP.get(str(result_code).strip(), "Not Paid" if is_final else "Pending")
 
 
 def read_stk_callback(callback: dict) -> WebhookEvent:
@@ -272,7 +275,7 @@ def read_stk_callback(callback: dict) -> WebhookEvent:
 
 	return WebhookEvent(
 		session_id=session_id,
-		status=read_result_status(result_code),
+		status=read_result_status(result_code, is_final=True),
 		# Safaricom sends one callback per prompt.
 		event_id=session_id,
 		transaction_ref=receipt,

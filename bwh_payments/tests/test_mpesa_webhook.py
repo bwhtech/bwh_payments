@@ -55,6 +55,14 @@ class TestMpesaWebhookSpine(MpesaTestCase):
 		self.assertEqual(payment_request.status, "Cancelled")
 		self.assertIsNone(payment_request.gateway_transaction_ref)
 
+	def test_a_callback_with_an_unrecognised_result_code_closes_the_request_as_not_paid(self):
+		payment_request = make_mpesa_payment_request()
+
+		self.post_callback(build_stk_callback(payment_request.order_ref, result_code=4242))
+
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Not Paid")
+
 	def test_a_callback_with_the_wrong_token_is_rejected_and_nothing_is_marked_paid(self):
 		payment_request = make_mpesa_payment_request()
 
