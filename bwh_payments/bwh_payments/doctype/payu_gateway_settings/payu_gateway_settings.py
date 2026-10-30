@@ -46,6 +46,8 @@ CHECKOUT_FORM = """<!doctype html>
 
 
 class PayUGatewaySettings(Document, PaymentGatewayBase):
+	logo = "/assets/bwh_payments/images/gateways/payu.svg"
+	logo_dark = "/assets/bwh_payments/images/gateways/payu-dark.svg"
 	description = "Cards, UPI, netbanking and wallets. India, INR only."
 	docs_url = "https://docs.payu.in/"
 
