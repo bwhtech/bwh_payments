@@ -109,7 +109,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		# Commit only the cleanup; frappe's class-level rollback would undo it otherwise.
 		frappe.db.rollback()
 		remove_stripe_gateway()
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	def use_currency_number_format(self):
 		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 1)
