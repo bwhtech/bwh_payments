@@ -87,10 +87,10 @@ def run_as_administrator():
 	"""
 	session = frappe._dict(frappe.local.session)
 	try:
-		frappe.set_user("Administrator")
+		frappe.set_user("Administrator")  # nosemgrep: frappe-setuser
 		yield
 	finally:
-		frappe.set_user(session.user)
+		frappe.set_user(session.user)  # nosemgrep: frappe-setuser
 		frappe.local.session.update(session)
 
 

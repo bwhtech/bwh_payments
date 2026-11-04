@@ -31,7 +31,7 @@ class TestGatewayRefund(IntegrationTestCase):
 		# Refunds commit their reservation, so they outlive the class rollback.
 		frappe.db.rollback()
 		remove_stripe_gateway()
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	def make_paid_request(self, amount: float = 100):
 		payment_request = make_payment_request(amount, "SAR")
