@@ -126,7 +126,7 @@ class RazorpayTestCase(IntegrationTestCase):
 		# Commit only the cleanup; frappe's class-level rollback would undo it otherwise.
 		frappe.db.rollback()
 		remove_razorpay_gateway()
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	def get_settings(self):
 		return frappe.get_single("Razorpay Gateway Settings")
