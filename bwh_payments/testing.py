@@ -14,7 +14,11 @@ from werkzeug.wrappers import Request
 from bwh_payments.bwh_payments import webhook
 from bwh_payments.bwh_payments.utils import run_as_administrator
 from bwh_payments.currency import to_minor_units
-from bwh_payments.services.razorpay.stub import StubRazorpayClient, build_refund_event, sign_payload
+from bwh_payments.services.razorpay.stub import (  # nosemgrep: frappe-monkey-patching-not-allowed
+	StubRazorpayClient,
+	build_refund_event,
+	sign_payload,
+)
 
 TEST_GATEWAY = "Test Gateway"
 SETTINGS = "Razorpay Gateway Settings"
