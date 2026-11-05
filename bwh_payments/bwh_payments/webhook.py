@@ -133,27 +133,29 @@ def rollback_on_error(save_point: str):
 
 	Frappe's savepoint rollback keeps those callbacks, so the jobs, emails and events queued for an order
 	that was rolled back would still go out on the next commit, such as the one marking the webhook Failed.
+	The block must not commit: a commit inside runs only the block's callbacks, not the outer ones.
 	"""
-	outer = {name: getattr(frappe.db, name) for name in TRANSACTION_CALLBACKS}
+	outer = {}
 	for name in TRANSACTION_CALLBACKS:
+		outer[name] = getattr(frappe.db, name)
 		setattr(frappe.db, name, CallbackManager())
 	frappe.db.savepoint(save_point)
 
-	succeeded = False
 	try:
 		yield
-		succeeded = True
 	except BaseException:
-		frappe.db.before_rollback.run()
-		frappe.db.rollback(save_point=save_point)
-		frappe.db.after_rollback.run()
+		try:
+			frappe.db.before_rollback.run()
+			frappe.db.rollback(save_point=save_point)
+			frappe.db.after_rollback.run()
+		finally:
+			for name, callbacks in outer.items():
+				setattr(frappe.db, name, callbacks)
 		raise
-	finally:
+	else:
 		for name, callbacks in outer.items():
-			inner = getattr(frappe.db, name)
+			callbacks._functions.extend(getattr(frappe.db, name)._functions)
 			setattr(frappe.db, name, callbacks)
-			if succeeded:
-				callbacks.add(inner.run)
 
 
 @frappe.whitelist(methods=["POST"])
