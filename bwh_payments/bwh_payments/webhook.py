@@ -145,7 +145,7 @@ def apply_event_as_administrator(payment_request, event: WebhookEvent):
 		elif event.sync_status:
 			payment_request.sync_status()
 		else:
-			payment_request.apply_webhook_status(event.status, event.event_id)
+			payment_request.apply_webhook_status(event.status, event.event_id, event.transaction_ref)
 
 
 def apply_refund_event(payment_request, event: WebhookEvent):

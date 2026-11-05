@@ -355,11 +355,17 @@ class GatewayPaymentRequest(Document):
 		"""Payment Entries refunded before Gateway Refund kept the ledger."""
 		return [entry for entry in (self.refund_payment_entries or "").split(",") if entry]
 
-	def apply_webhook_status(self, status: str, event_id: str | None = None) -> bool:
+	def apply_webhook_status(
+		self, status: str, event_id: str | None = None, transaction_ref: str | None = None
+	) -> bool:
 		self.lock_row()
 
 		if event_id and self.last_webhook_event_id == event_id:
 			return False
+		# Kept even when a status sync settled the request first: some gateways (M-Pesa) name the
+		# settled payment only in their webhook, and refunds need it.
+		if status == "Paid" and transaction_ref and not self.gateway_transaction_ref:
+			self.db_set("gateway_transaction_ref", transaction_ref)
 		if self.status != "Pending":
 			return False
 		if status not in WEBHOOK_WRITABLE_STATUSES:
