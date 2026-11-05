@@ -2,9 +2,11 @@
 # See license.txt
 
 import frappe
+from frappe.utils.data import flt
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
+from bwh_payments.base_class import WebhookEvent
 from bwh_payments.bwh_payments import webhook
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RAZORPAY_GATEWAY,
@@ -12,15 +14,15 @@ from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_g
 	RazorpayTestCase,
 	make_razorpay_payment_request,
 )
-from bwh_payments.tests.fake_razorpay import build_payment_link_paid_event, sign_razorpay_payload
-
-# No IGNORE_TEST_RECORD_DEPENDENCIES here: frappe only honours it inside a doctype folder and raises
-# NotImplementedError otherwise. Outside one it loads no test records at all, which is what we want.
+from bwh_payments.services.razorpay.stub import (
+	StubRazorpayClient,
+	build_payment_link_event,
+	build_refund_event,
+	sign_payload,
+)
 
 
 class TestRazorpayWebhookSpine(RazorpayTestCase):
-	"""The whole delivery path: `webhook.handle()` -> gateway verifier -> Gateway Payment Request."""
-
 	def setUp(self):
 		super().setUp()
 		self.original_request = getattr(frappe.local, "request", None)
@@ -50,9 +52,9 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_a_correctly_signed_event_marks_the_request_paid(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
-		response = self.post_webhook(payload, sign_razorpay_payload(payload, RAZORPAY_WEBHOOK_SECRET))
+		response = self.post_webhook(payload, sign_payload(payload, RAZORPAY_WEBHOOK_SECRET))
 
 		self.assertEqual(response["status"], "ok")
 		payment_request.reload()
@@ -60,9 +62,9 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_a_forged_signature_is_rejected_and_nothing_is_marked_paid(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
-		response = self.post_webhook(payload, sign_razorpay_payload(payload, "attacker_guess"))
+		response = self.post_webhook(payload, sign_payload(payload, "attacker_guess"))
 
 		self.assertEqual(response["status"], "error")
 		self.assertEqual(self.get_status_code(), 400)
@@ -71,7 +73,7 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_an_unsigned_delivery_is_rejected(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
 		response = self.post_webhook(payload, None)
 
@@ -82,8 +84,8 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_a_replayed_delivery_is_accepted_but_applied_once(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
-		signature = sign_razorpay_payload(payload, RAZORPAY_WEBHOOK_SECRET)
+		payload = build_payment_link_event(payment_request.order_ref)
+		signature = sign_payload(payload, RAZORPAY_WEBHOOK_SECRET)
 
 		self.post_webhook(payload, signature, event_id="evt_rzp_replay")
 		second = self.post_webhook(payload, signature, event_id="evt_rzp_replay")
@@ -96,7 +98,7 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 		self.assertEqual(payment_request.last_webhook_event_id, "evt_rzp_replay")
 
 	def test_a_rejection_does_not_echo_the_gateway_error_back_to_the_caller(self):
-		payload = build_payment_link_paid_event("plink_nothing")
+		payload = build_payment_link_event("plink_nothing")
 
 		self.post_webhook(payload, None)
 
@@ -104,9 +106,9 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 
 	def test_the_webhook_log_never_stores_the_raw_payload(self):
 		payment_request = make_razorpay_payment_request(100, "INR")
-		payload = build_payment_link_paid_event(payment_request.order_ref)
+		payload = build_payment_link_event(payment_request.order_ref)
 
-		self.post_webhook(payload, sign_razorpay_payload(payload, RAZORPAY_WEBHOOK_SECRET))
+		self.post_webhook(payload, sign_payload(payload, RAZORPAY_WEBHOOK_SECRET))
 
 		logged = frappe.get_all(
 			"Integration Request",
@@ -114,7 +116,94 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 			fields=["data"],
 		)
 		self.assertTrue(logged)
-		# The log records the gateway, the link id and the event id — never the delivered body.
 		for row in logged:
 			self.assertNotIn("payment_link", row.data)
 			self.assertNotIn("entity", row.data)
+
+	def make_paid_request(self, amount: float = 100):
+		payment_request = make_razorpay_payment_request(amount, "INR")
+		StubRazorpayClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		return payment_request
+
+	def post_refund_event(self, refund_id, payment_id, status, amount_in_paise, event_id):
+		payload = build_refund_event(refund_id, payment_id, status, amount_in_paise)
+		return self.post_webhook(payload, sign_payload(payload, RAZORPAY_WEBHOOK_SECRET), event_id=event_id)
+
+	def test_a_processed_refund_event_settles_the_pending_refund(self):
+		payment_request = self.make_paid_request()
+		StubRazorpayClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(40)
+
+		response = self.post_refund_event(
+			refund.refund_id, payment_request.gateway_transaction_ref, "processed", 4000, "evt_rfnd_processed"
+		)
+
+		self.assertEqual(response["status"], "ok")
+		refund.reload()
+		payment_request.reload()
+		self.assertEqual(refund.status, "Processed")
+		self.assertEqual(flt(payment_request.refund_amount), 40)
+
+	def test_a_failed_refund_event_frees_the_amount_again(self):
+		payment_request = self.make_paid_request()
+		StubRazorpayClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(100)
+
+		self.post_refund_event(
+			refund.refund_id, payment_request.gateway_transaction_ref, "failed", 10000, "evt_rfnd_failed"
+		)
+
+		refund.reload()
+		payment_request.reload()
+		self.assertEqual(refund.status, "Failed")
+		self.assertEqual(payment_request.get_remaining_refundable_amount(), 100)
+
+	def test_a_refund_raised_in_the_razorpay_dashboard_is_recorded_against_its_payment(self):
+		payment_request = self.make_paid_request()
+
+		self.post_refund_event(
+			"rfnd_from_dashboard", payment_request.gateway_transaction_ref, "processed", 2500, "evt_rfnd_ext"
+		)
+
+		[refund] = frappe.get_all(
+			"Gateway Refund",
+			filters={"payment_request": payment_request.name},
+			fields=["refund_id", "status", "amount"],
+		)
+		self.assertEqual(
+			(refund.refund_id, refund.status, flt(refund.amount)), ("rfnd_from_dashboard", "Processed", 25)
+		)
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Partially Refunded")
+
+	def test_a_refund_for_a_payment_we_never_took_is_acknowledged_and_ignored(self):
+		response = self.post_refund_event(
+			"rfnd_stranger", "pay_stranger", "processed", 100, "evt_rfnd_stranger"
+		)
+
+		self.assertEqual(response["status"], "ok")
+		self.assertIsNone(self.get_status_code())
+		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": "rfnd_stranger"}))
+
+	def test_a_refund_event_that_races_our_own_refund_is_retried_rather_than_counted_twice(self):
+		payment_request = self.make_paid_request()
+		# Our refund is reserved but the gateway has not answered yet, so it has no refund id.
+		frappe.get_doc(
+			{"doctype": "Gateway Refund", "payment_request": payment_request.name, "amount": 25}
+		).insert(ignore_permissions=True)
+		event = WebhookEvent(
+			refund_id="rfnd_in_flight",
+			status="processed",
+			refund_amount=25,
+			transaction_ref=payment_request.gateway_transaction_ref,
+		)
+
+		with self.assertRaises(frappe.RetryBackgroundJobError):
+			webhook.apply_refund_event(payment_request, event)
+
+		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": "rfnd_in_flight"}))
+
+	def test_an_event_naming_neither_a_session_nor_a_refund_is_invalid(self):
+		with self.assertRaises(ValueError):
+			WebhookEvent(status="processed")

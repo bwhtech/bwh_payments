@@ -1,0 +1,129 @@
+import hashlib
+import hmac
+import json
+import time
+from typing import ClassVar
+
+import frappe
+import stripe
+
+from bwh_payments.services.stripe.base import BaseStripeClient, StripeCheckoutSession, StripeRefund
+
+
+class StubStripeClient(BaseStripeClient):
+	"""In-memory Stripe for tests. Call reset() in setUp."""
+
+	sessions: ClassVar[dict[str, StripeCheckoutSession]] = {}
+	created_sessions: ClassVar[list[dict]] = []
+	created_refunds: ClassVar[list[dict]] = []
+	refunds: ClassVar[dict[str, StripeRefund]] = {}
+	next_refund_status: ClassVar[str] = "succeeded"
+
+	@classmethod
+	def reset(cls):
+		cls.sessions = {}
+		cls.created_sessions = []
+		cls.created_refunds = []
+		cls.refunds = {}
+		cls.next_refund_status = "succeeded"
+
+	@classmethod
+	def set_refund_status(cls, refund_id: str, status: str):
+		cls.refunds[refund_id].status = status
+
+	@classmethod
+	def pay(cls, session_id: str):
+		"""Complete the session with a captured PaymentIntent."""
+		session = cls.sessions[session_id]
+		session.payment_status = "paid"
+		session.status = "complete"
+		session.payment_intent = f"pi_{session_id}"
+
+	def create_checkout_session(self, params: dict) -> StripeCheckoutSession:
+		self.created_sessions.append(params)
+		# Unique per call: the doctype enforces a unique order_ref and rows outlive a single test.
+		session_id = f"cs_test_{frappe.generate_hash(length=12)}"
+		self.sessions[session_id] = StripeCheckoutSession(
+			id=session_id,
+			url=f"https://checkout.stripe.test/{session_id}",
+			status="open",
+			payment_status="unpaid",
+			currency=params["line_items"][0]["price_data"]["currency"],
+			success_url=params["success_url"],
+			cancel_url=params["cancel_url"],
+		)
+		return self.retrieve_checkout_session(session_id)
+
+	def retrieve_checkout_session(self, session_id: str) -> StripeCheckoutSession:
+		if session_id not in self.sessions:
+			raise stripe.InvalidRequestError(f"No such checkout.session: '{session_id}'", param="session")
+		return self.sessions[session_id].model_copy()
+
+	def expire_checkout_session(self, session_id: str) -> StripeCheckoutSession:
+		session = self.retrieve_checkout_session(session_id)
+		if session.status != "open":
+			raise stripe.InvalidRequestError(
+				f"session is {session.status} and cannot be expired", param="session"
+			)
+		self.sessions[session_id].status = "expired"
+		return self.retrieve_checkout_session(session_id)
+
+	def create_refund(self, params: dict) -> StripeRefund:
+		self.created_refunds.append(params)
+		refund = StripeRefund(
+			id=f"re_test_{frappe.generate_hash(length=12)}",
+			status=self.next_refund_status,
+			amount=params["amount"],
+		)
+		self.refunds[refund.id] = refund
+		return refund.model_copy()
+
+	def retrieve_refund(self, refund_id: str) -> StripeRefund:
+		if refund_id not in self.refunds:
+			raise stripe.InvalidRequestError(f"No such refund: '{refund_id}'", param="id")
+		return self.refunds[refund_id].model_copy()
+
+
+def sign_payload(payload: bytes, secret: str, timestamp: int | None = None) -> str:
+	timestamp = timestamp or int(time.time())
+	signed_payload = b"%d." % timestamp + payload
+	signature = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+	return f"t={timestamp},v1={signature}"
+
+
+def build_checkout_completed_event(session_id: str, event_id: str | None = None) -> bytes:
+	return json.dumps(
+		{
+			# Unique by default: webhook logs outlive a test and redeliveries are deduped on this id.
+			"id": event_id or f"evt_{frappe.generate_hash(length=12)}",
+			"type": "checkout.session.completed",
+			"data": {"object": {"id": session_id, "payment_status": "paid"}},
+		}
+	).encode()
+
+
+def build_refund_event(
+	refund_id: str,
+	payment_intent: str,
+	status: str,
+	amount: int,
+	currency: str,
+	event_type: str = "refund.updated",
+	event_id: str | None = None,
+) -> bytes:
+	return json.dumps(
+		{
+			"id": event_id or f"evt_{frappe.generate_hash(length=12)}",
+			"type": event_type,
+			"data": {
+				"object": {
+					"id": refund_id,
+					"object": "refund",
+					"payment_intent": payment_intent,
+					"status": status,
+					"amount": amount,
+					"currency": currency,
+				}
+			},
+		}
+	).encode()

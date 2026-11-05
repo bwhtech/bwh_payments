@@ -4,18 +4,24 @@
 from unittest.mock import patch
 
 import frappe
+from frappe.geo.doctype.currency.currency import Currency
 from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
-from bwh_payments.bwh_payments.doctype.stripe_gateway_settings import stripe_gateway_settings
+from bwh_payments.api import create_payment
+from bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_request import (
+	GatewayPaymentRequest,
+)
 from bwh_payments.currency import to_minor_units
-from bwh_payments.tests.fake_stripe import FakeStripeClient
+from bwh_payments.services.stripe.base import StripeRefund
+from bwh_payments.services.stripe.stub import StubStripeClient
 
 GATEWAY = "Stripe Test Gateway"
 WEBHOOK_SECRET = "whsec_test_secret"
+RETURN_URL = (
+	"https://shop.test/api/method/bwh_payments.bwh_payments.checkout.return_from_gateway?request=GPR-1"
+)
 
-# None of these links are exercised here, and generating their fixtures drags in ERPNext's whole test
-# bootstrap for no benefit.
 IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Address",
 	"Company",
@@ -51,24 +57,27 @@ def configure_stripe_gateway():
 
 
 def remove_stripe_gateway():
-	"""Undo configure_stripe_gateway.
-
-	Callers reach for this from setUpClass, which runs outside the per-test rollback. Without it a test
-	run leaves the dev site with an enabled gateway backed by a fake `sk_test_x` key, which the storefront
-	then offers shoppers at checkout.
-
-	The requests have to go too: `frappe.integrations.utils.create_request_log` commits, so every refund
-	test escapes the rollback and pins its Gateway Payment Request to the site for good.
-	"""
+	"""`create_request_log` commits, so refund tests escape the rollback and need this cleanup."""
+	frappe.db.delete(
+		"Gateway Refund",
+		{
+			"payment_request": [
+				"in",
+				frappe.get_all("Gateway Payment Request", {"gateway": GATEWAY}, pluck="name"),
+			]
+		},
+	)
 	for request_name in frappe.get_all("Gateway Payment Request", filters={"gateway": GATEWAY}, pluck="name"):
 		frappe.delete_doc(
 			"Gateway Payment Request", request_name, ignore_permissions=True, delete_permanently=True
 		)
 
+	frappe.db.delete("Integration Request", {"integration_request_service": f"{GATEWAY} Webhook"})
+
 	frappe.delete_doc(
 		"Payment Gateway Profile", GATEWAY, ignore_missing=True, ignore_permissions=True, force=True
 	)
-	# set_single_value, not save(): the keys are mandatory, so blanking them cannot go through validation.
+	# Not save(): the keys are mandatory.
 	frappe.db.set_single_value(
 		"Stripe Gateway Settings",
 		{"enabled": 0, "public_key": "", "private_key": "", "webhook_secret": ""},
@@ -91,61 +100,48 @@ def make_payment_request(amount: float, currency: str = "SAR"):
 
 class TestGatewayPaymentRequest(IntegrationTestCase):
 	def setUp(self):
-		FakeStripeClient.reset()
-		self.stripe_client_patch = patch.object(
-			stripe_gateway_settings.stripe, "StripeClient", FakeStripeClient
-		)
-		self.stripe_client_patch.start()
-		self.addCleanup(self.stripe_client_patch.stop)
+		StubStripeClient.reset()
 		configure_stripe_gateway()
 
 	@classmethod
 	def tearDownClass(cls):
 		super().tearDownClass()
-		# Roll back the suite's own writes first so the commit below persists nothing but the cleanup, and
-		# commit it because the class-level rollback frappe queues after this would otherwise undo it.
+		# Commit only the cleanup; frappe's class-level rollback would undo it otherwise.
 		frappe.db.rollback()
 		remove_stripe_gateway()
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	def use_currency_number_format(self):
-		"""Let Currency fields take their precision from the currency, not the site number format."""
 		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 1)
 		frappe.clear_cache()
 
 	def mark_paid(self, payment_request):
-		FakeStripeClient.register_paid_session(
-			payment_request.order_ref, payment_request.currency_code.lower()
-		)
+		StubStripeClient.pay(payment_request.order_ref)
 		payment_request.db_set("status", "Paid", update_modified=False)
 		payment_request.reload()
 
-	# --- session creation -------------------------------------------------
-
 	def test_create_session_charges_iso_minor_units_for_a_three_decimal_currency(self):
-		"""KWD has three decimals. The ported int(amount * 100) billed 1234 fils for 12.345 KWD."""
 		self.use_currency_number_format()
 		payment_request = make_payment_request(12.345, "KWD")
 
-		charged = FakeStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
+		charged = StubStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
 		self.assertEqual(charged, 12345)
 		self.assertNotEqual(charged, int(12.345 * 100))
 		self.assertTrue(payment_request.order_ref)
 
 	def test_a_three_decimal_amount_is_refused_when_the_site_stores_only_two(self):
-		"""Better to refuse the charge than to store 12.35 KWD and bill the shopper a different figure."""
 		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 0)
 		frappe.clear_cache()
 
 		with self.assertRaises(frappe.ValidationError):
 			make_payment_request(12.345, "KWD")
 
-		self.assertEqual(FakeStripeClient.created_sessions, [])
+		self.assertEqual(StubStripeClient.created_sessions, [])
 
 	def test_create_session_charges_iso_minor_units_for_a_zero_decimal_currency(self):
 		make_payment_request(1000, "JPY")
 
-		charged = FakeStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
+		charged = StubStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
 		self.assertEqual(charged, 1000)
 		self.assertNotEqual(charged, 1000 * 100)
 
@@ -160,22 +156,19 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertIn("session_id={CHECKOUT_SESSION_ID}", success_url)
 		self.assertEqual(success_url.count("?"), 1)
 
-	# --- refund ledger ----------------------------------------------------
-
 	def test_charge_and_refund_agree_on_the_minor_unit_conversion(self):
 		self.use_currency_number_format()
 		payment_request = make_payment_request(12.345, "KWD")
-		charged = FakeStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
+		charged = StubStripeClient.created_sessions[-1]["line_items"][0]["price_data"]["unit_amount"]
 		self.mark_paid(payment_request)
 
 		payment_request.refund()
 
-		self.assertEqual(FakeStripeClient.created_refunds[-1]["amount"], charged)
+		self.assertEqual(StubStripeClient.created_refunds[-1]["amount"], charged)
 		self.assertEqual(to_minor_units(payment_request.refund_amount, "KWD"), charged)
 		self.assertEqual(payment_request.status, "Refunded")
 
 	def test_refund_guard_reads_the_locked_ledger_not_the_in_memory_copy(self):
-		"""A stale in-memory refund_amount is exactly how two concurrent refunds both pass the guard."""
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 
@@ -188,7 +181,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(100)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 
 	def test_refund_id_is_appended_once_per_successful_partial(self):
 		payment_request = make_payment_request(100, "SAR")
@@ -207,12 +200,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 		payment_request.refund(60)
-		FakeStripeClient.created_refunds.clear()
+		StubStripeClient.created_refunds.clear()
 
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(41)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 		self.assertEqual(flt(payment_request.refund_amount), 60.0)
 
 	def test_an_omitted_amount_refunds_the_whole_remaining_balance(self):
@@ -226,14 +219,13 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(payment_request.status, "Refunded")
 
 	def test_a_sub_minor_unit_amount_is_rejected_rather_than_refunding_everything(self):
-		"""`flt(amount, 2) or remaining` made flt(0.004, 2) == 0.0 falsy, so 0.004 refunded the lot."""
 		payment_request = make_payment_request(500, "SAR")
 		self.mark_paid(payment_request)
 
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(0.004)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 		payment_request.reload()
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 		self.assertEqual(payment_request.status, "Paid")
@@ -245,11 +237,10 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(0)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 
 	def test_a_residue_under_a_whole_unit_stays_refundable(self):
-		"""Relabelling this Refunded drops it out of REFUNDABLE_STATUSES and strands the 0.99 forever."""
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 
@@ -260,7 +251,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertEqual(flt(payment_request.refund_amount), 100.0)
 		self.assertEqual(payment_request.status, "Refunded")
-		self.assertEqual(FakeStripeClient.created_refunds[-1]["amount"], to_minor_units(0.99, "SAR"))
+		self.assertEqual(StubStripeClient.created_refunds[-1]["amount"], to_minor_units(0.99, "SAR"))
 
 	def test_a_whole_unit_left_is_still_only_partially_refunded(self):
 		payment_request = make_payment_request(100, "SAR")
@@ -276,12 +267,12 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(10)
 
-		self.assertEqual(FakeStripeClient.created_refunds, [])
+		self.assertEqual(StubStripeClient.created_refunds, [])
 
 	def test_a_failed_gateway_refund_leaves_the_ledger_untouched(self):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
-		FakeStripeClient.next_refund_status = "failed"
+		StubStripeClient.next_refund_status = "failed"
 
 		with self.assertRaises(frappe.ValidationError):
 			payment_request.refund(50)
@@ -290,22 +281,52 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(flt(payment_request.refund_amount), 0.0)
 		self.assertIsNone(payment_request.refund_id)
 
-	# --- polled status ----------------------------------------------------
+	def test_a_gateway_that_returns_no_refund_details_still_books_the_refund(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		with patch.object(type(payment_request.get_gateway_settings()), "refund_payment", return_value=None):
+			payment_request.refund(40)
+
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+		self.assertEqual(payment_request.status, "Partially Refunded")
+
+	def test_a_numeric_refund_id_from_another_apps_gateway_still_books_the_refund(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		with patch.object(
+			type(payment_request.get_gateway_settings()), "refund_payment", return_value={"refund_id": 12345}
+		):
+			payment_request.refund(40)
+
+		self.assertEqual(payment_request.refund_id, "12345")
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def test_a_refund_echo_without_id_or_amount_still_books_the_refund(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		with patch.object(StubStripeClient, "create_refund", return_value=StripeRefund(status="succeeded")):
+			payment_request.refund(40)
+
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+		self.assertEqual(payment_request.status, "Partially Refunded")
 
 	def test_an_abandoned_session_is_released_and_expired_at_the_gateway(self):
 		payment_request = make_payment_request(100, "SAR")
 
 		self.assertTrue(payment_request.release_if_unpaid())
 		self.assertEqual(payment_request.status, "Cancelled")
-		self.assertEqual(FakeStripeClient.sessions[payment_request.order_ref]["status"], "expired")
+		self.assertEqual(StubStripeClient.sessions[payment_request.order_ref].status, "expired")
 
 	def test_a_paid_session_keeps_its_payment_and_is_never_expired(self):
 		payment_request = make_payment_request(100, "SAR")
-		FakeStripeClient.register_paid_session(payment_request.order_ref, "sar")
+		StubStripeClient.pay(payment_request.order_ref)
 
 		self.assertFalse(payment_request.release_if_unpaid())
 		self.assertEqual(payment_request.status, "Paid")
-		self.assertEqual(FakeStripeClient.sessions[payment_request.order_ref]["status"], "complete")
+		self.assertEqual(StubStripeClient.sessions[payment_request.order_ref].status, "complete")
 
 	def test_a_session_the_gateway_will_not_cancel_stays_pending(self):
 		payment_request = make_payment_request(100, "SAR")
@@ -322,7 +343,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertFalse(PaymentGatewayBase.cancel_session(object(), payment_request.order_ref))
 
 	def test_sync_status_does_not_reopen_a_payment_a_webhook_already_settled(self):
-		"""The shopper's poll and the webhook race; the poll must lose, not overwrite."""
 		payment_request = make_payment_request(100, "SAR")
 
 		# Stand in for a webhook that committed while the gateway round-trip was in flight.
@@ -346,8 +366,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertEqual(payment_request.status, "Partially Refunded")
 
-	# --- webhook status ---------------------------------------------------
-
 	def test_a_replayed_webhook_event_is_ignored(self):
 		payment_request = make_payment_request(100, "SAR")
 
@@ -368,7 +386,37 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertFalse(payment_request.apply_webhook_status("Refunded", "evt_1"))
 		self.assertEqual(payment_request.status, "Pending")
 
-	# --- schema invariants ------------------------------------------------
+	def test_the_referenced_document_hears_about_a_payment_once(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		with patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized:
+			payment_request.apply_webhook_status("Paid", "evt_1")
+			payment_request.sync_status()
+
+		on_payment_authorized.assert_called_once_with("Completed")
+
+	def test_a_payment_that_did_not_settle_is_not_announced(self):
+		payment_request = make_payment_request(100, "SAR")
+
+		with patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized:
+			payment_request.apply_webhook_status("Cancelled", "evt_1")
+
+		on_payment_authorized.assert_not_called()
+
+	def test_create_payment_opens_a_checkout_for_the_document(self):
+		payment_request = create_payment(
+			"Currency", "SAR", 100, "SAR", GATEWAY, customer_email="shopper@example.com"
+		)
+
+		self.assertEqual(payment_request.status, "Pending")
+		self.assertTrue(payment_request.order_url)
+		self.assertEqual(payment_request.customer_email, "shopper@example.com")
+
+	def test_create_payment_refuses_fields_beyond_company_and_customer_details(self):
+		with self.assertRaises(frappe.ValidationError):
+			create_payment("Currency", "SAR", 100, "SAR", GATEWAY, status="Paid")
+
+		self.assertEqual(StubStripeClient.created_sessions, [])
 
 	def test_order_ref_is_unique(self):
 		first = make_payment_request(100, "SAR")
@@ -387,5 +435,125 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 			).insert(ignore_permissions=True)
 
 	def test_gateway_payment_request_is_not_submittable(self):
-		# A submittable refund ledger can be amended into a second copy and double-count refunds.
 		self.assertFalse(frappe.get_meta("Gateway Payment Request").is_submittable)
+
+	def test_a_new_checkout_cannot_start_out_already_paid(self):
+		with (
+			patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized,
+			self.assertRaises(frappe.ValidationError),
+		):
+			frappe.get_doc(
+				{
+					"doctype": "Gateway Payment Request",
+					"gateway": GATEWAY,
+					"amount": 100,
+					"currency_code": "SAR",
+					"ref_doctype": "Currency",
+					"ref_docname": "SAR",
+					"status": "Paid",
+				}
+			).insert(ignore_permissions=True)
+
+		on_payment_authorized.assert_not_called()
+		self.assertEqual(StubStripeClient.created_sessions, [])
+
+	def test_importing_a_settled_payment_does_not_settle_the_document_again(self):
+		with patch.object(Currency, "on_payment_authorized", create=True) as on_payment_authorized:
+			imported = frappe.get_doc(
+				{
+					"doctype": "Gateway Payment Request",
+					"gateway": GATEWAY,
+					"amount": 100,
+					"currency_code": "SAR",
+					"ref_doctype": "Currency",
+					"ref_docname": "SAR",
+					"status": "Paid",
+					"order_ref": "cs_imported_1",
+				}
+			).insert(ignore_permissions=True)
+
+		on_payment_authorized.assert_not_called()
+		self.assertEqual(imported.status, "Paid")
+		self.assertEqual(StubStripeClient.created_sessions, [])
+
+	def test_what_the_shopper_was_charged_cannot_change_after_checkout_opens(self):
+		payment_request = make_payment_request(100, "SAR")
+		frappe.get_doc(
+			{
+				"doctype": "Payment Gateway Profile",
+				"name": "Another Gateway",
+				"gateway_settings": "Stripe Gateway Settings",
+				"enabled": 1,
+			}
+		).insert(ignore_permissions=True)
+
+		for field, value in (
+			("amount", 1),
+			("currency_code", "USD"),
+			("gateway", "Another Gateway"),
+			("order_ref", "cs_swapped"),
+		):
+			with self.subTest(field=field):
+				changed = frappe.get_doc("Gateway Payment Request", payment_request.name)
+				changed.set(field, value)
+				with self.assertRaises(frappe.CannotChangeConstantError):
+					changed.save(ignore_permissions=True)
+
+	def test_a_paid_request_remembers_the_transaction_the_gateway_settled(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+
+		payment_request.sync_status()
+
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertEqual(payment_request.gateway_transaction_ref, f"pi_{payment_request.order_ref}")
+
+	def test_a_transaction_lookup_that_fails_does_not_stop_the_payment_settling(self):
+		payment_request = make_payment_request(100, "SAR")
+		settings_class = type(payment_request.get_gateway_settings())
+
+		with patch.object(settings_class, "get_transaction_ref", side_effect=frappe.ValidationError):
+			payment_request.apply_webhook_status("Paid", "evt_ref_down")
+
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertIsNone(payment_request.gateway_transaction_ref)
+
+	def test_stripe_sends_the_shopper_back_to_the_given_return_url_either_way(self):
+		settings = frappe.get_single("Stripe Gateway Settings")
+		settings.success_url = ""
+
+		settings.create_session(100, "SAR", reference="GPR-1", return_url=RETURN_URL)
+
+		created = StubStripeClient.created_sessions[-1]
+		self.assertEqual((created["success_url"], created["cancel_url"]), (RETURN_URL, RETURN_URL))
+
+	def test_a_payment_with_a_redirect_comes_back_through_the_return_endpoint(self):
+		payment_request = create_payment(
+			"Currency", "SAR", 100, "SAR", GATEWAY, redirect_to="/orders/1?token=x"
+		)
+
+		self.assertEqual(payment_request.redirect_to, "/orders/1?token=x")
+		self.assertIn(
+			f"checkout.return_from_gateway?request={payment_request.name}",
+			StubStripeClient.created_sessions[-1]["success_url"],
+		)
+
+	def test_a_redirect_must_stay_on_this_site(self):
+		for redirect_to in (
+			"https://evil.test/x",
+			"//evil.test/x",
+			"/\\evil.test/x",
+			"javascript:alert(1)",
+			"orders/1",
+		):
+			with self.subTest(redirect_to=redirect_to), self.assertRaises(frappe.ValidationError):
+				create_payment("Currency", "SAR", 100, "SAR", GATEWAY, redirect_to=redirect_to)
+
+		self.assertEqual(StubStripeClient.created_sessions, [])
+
+	def test_money_moving_methods_cannot_be_called_over_rest(self):
+		frappe.is_whitelisted(GatewayPaymentRequest.sync_status)
+
+		for method in (GatewayPaymentRequest.refund, GatewayPaymentRequest.release_if_unpaid):
+			with self.subTest(method=method.__name__), self.assertRaises(frappe.PermissionError):
+				frappe.is_whitelisted(method)

@@ -1,24 +1,22 @@
 import re
-from urllib.parse import urlsplit, urlunsplit
+from contextlib import contextmanager
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
-from frappe.utils.caching import site_cache
+from frappe.model.base_document import get_controller
+from frappe.utils.caching import redis_cache
 
-# A leading path segment that looks like "en" or "en-GB" is treated as the language prefix. Matching on
-# shape avoids a Language lookup on every checkout redirect.
+from bwh_payments.base_class import PaymentGatewayBase
+
 LANGUAGE_SEGMENT = re.compile(r"^[a-z]{2}(-[A-Za-z]{2})?$")
 
 
-@site_cache(ttl=60 * 60)
+@redis_cache(ttl=60 * 60)
 def get_available_payment_modes() -> list[str]:
-	# Runs on every checkout render and every Lifestyle Settings validate. site_cache lives in the worker
-	# process, so Payment Gateway Profile.on_update only clears the worker that took the save; the TTL is
-	# what bounds how long the other workers keep offering a just-disabled gateway.
 	return frappe.get_all("Payment Gateway Profile", filters={"enabled": 1}, pluck="name")
 
 
 def resolve_payment_mode(payment_mode: str) -> str | None:
-	"""Return the enabled Payment Gateway Profile matching a client-supplied mode, case-insensitively."""
 	requested = (payment_mode or "").strip().casefold()
 	if not requested:
 		return None
@@ -29,7 +27,6 @@ def resolve_payment_mode(payment_mode: str) -> str | None:
 
 
 def get_localised_url(url: str) -> str:
-	"""Retarget a configured redirect URL at the language the shopper is currently browsing in."""
 	language = frappe.local.lang
 	if not (url and language):
 		return url
@@ -41,3 +38,65 @@ def get_localised_url(url: str) -> str:
 
 	segments[1] = language
 	return urlunsplit((parts.scheme, parts.netloc, "/".join(segments), parts.query, parts.fragment))
+
+
+def add_reference_id(url: str, reference: str | None) -> str:
+	"""Localise a return URL and append `reference_id`, which storefronts read to find the request."""
+	parts = urlsplit(get_localised_url(url))
+	query = [*parse_qsl(parts.query), ("reference_id", reference or "")]
+	return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def get_gateway_settings(gateway: str):
+	"""The `<Gateway> Gateway Settings` Single behind a Payment Gateway Profile."""
+	return frappe.get_cached_doc(
+		frappe.get_cached_value("Payment Gateway Profile", gateway, "gateway_settings")
+	)
+
+
+def get_gateway_settings_doctypes() -> list[str]:
+	"""Every `<Gateway> Gateway Settings` Single on the site, including another app's gateways."""
+	doctypes = frappe.get_all(
+		"DocType", filters={"issingle": 1, "name": ("like", "% Gateway Settings")}, pluck="name"
+	)
+	return [doctype for doctype in doctypes if is_gateway_settings(doctype)]
+
+
+def is_gateway_settings(doctype: str) -> bool:
+	try:
+		controller = get_controller(doctype)
+	except ImportError:
+		# A DocType whose app was removed, or whose code is on another branch, must not break every
+		# screen that lists gateways. Logged to the file log: this runs on every checkout.
+		frappe.logger("bwh_payments").warning(f"Skipped {doctype}: its controller could not be imported")
+		return False
+	return issubclass(controller, PaymentGatewayBase)
+
+
+def supports_currency(settings, currency: str) -> bool:
+	supported = settings.supported_currencies()
+	return supported is None or currency.strip().upper() in supported
+
+
+@contextmanager
+def run_as_administrator():
+	"""Settling an order downstream needs a real user. Restored after, so a worker does not stay Administrator.
+
+	`set_user` overwrites the session's sid and data, and a web request saves that session back when it
+	ends, so the whole session is restored in place. Otherwise a signed-in shopper is logged out.
+	"""
+	session = frappe._dict(frappe.local.session)
+	try:
+		frappe.set_user("Administrator")  # nosemgrep: frappe-setuser
+		yield
+	finally:
+		frappe.set_user(session.user)  # nosemgrep: frappe-setuser
+		frappe.local.session.update(session)
+
+
+def is_local_path(url: str | None) -> bool:
+	"""A path on this site. Browsers read `//host` and `/\\host` as another site."""
+	if not url or not url.startswith("/") or url.startswith(("//", "/\\")):
+		return False
+	parts = urlsplit(url)
+	return not (parts.scheme or parts.netloc)

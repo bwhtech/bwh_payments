@@ -1,0 +1,157 @@
+{
+ "actions": [],
+ "creation": "2026-10-11 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "column_break_mode",
+  "mode",
+  "section_break_keys",
+  "merchant_id",
+  "public_key",
+  "column_break_keys",
+  "private_key",
+  "section_break_merchant_accounts",
+  "merchant_accounts",
+  "section_break_security",
+  "three_d_secure",
+  "section_break_urls",
+  "success_url",
+  "column_break_urls",
+  "cancelled_url",
+  "column_break_urls_two",
+  "failure_url"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "column_break_mode",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Sandbox",
+   "description": "Selects which Braintree environment the credentials below are sent to. Sandbox and Production credentials are not interchangeable.",
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "label": "Mode",
+   "options": "Sandbox\nProduction",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_keys",
+   "fieldtype": "Section Break",
+   "label": "API Credentials"
+  },
+  {
+   "fieldname": "merchant_id",
+   "fieldtype": "Data",
+   "label": "Merchant ID",
+   "reqd": 1
+  },
+  {
+   "fieldname": "public_key",
+   "fieldtype": "Data",
+   "label": "Public Key",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_keys",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "private_key",
+   "fieldtype": "Password",
+   "label": "Private Key",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_merchant_accounts",
+   "fieldtype": "Section Break",
+   "label": "Merchant Accounts"
+  },
+  {
+   "description": "Braintree settles each currency through its own merchant account. Braintree is only offered at checkout for the currencies listed here.",
+   "fieldname": "merchant_accounts",
+   "fieldtype": "Table",
+   "label": "Merchant Accounts",
+   "options": "Braintree Merchant Account"
+  },
+  {
+   "fieldname": "section_break_security",
+   "fieldtype": "Section Break",
+   "label": "Security"
+  },
+  {
+   "default": "1",
+   "description": "Asks the card issuer to authenticate the shopper. Required for most EU and UK cards, and shifts fraud liability to the issuer.",
+   "fieldname": "three_d_secure",
+   "fieldtype": "Check",
+   "label": "3-D Secure"
+  },
+  {
+   "fieldname": "section_break_urls",
+   "fieldtype": "Section Break",
+   "label": "Redirect URLs"
+  },
+  {
+   "fieldname": "success_url",
+   "fieldtype": "Data",
+   "label": "Success URL",
+   "options": "URL"
+  },
+  {
+   "fieldname": "column_break_urls",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Where the checkout page's cancel link sends the shopper.",
+   "fieldname": "cancelled_url",
+   "fieldtype": "Data",
+   "label": "Cancelled URL",
+   "options": "URL"
+  },
+  {
+   "fieldname": "column_break_urls_two",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "A declined card stays on the checkout page for a retry; this is recorded on the request so the storefront has somewhere to send a shopper whose payment did not complete.",
+   "fieldname": "failure_url",
+   "fieldtype": "Data",
+   "label": "Failure URL",
+   "options": "URL"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-11 00:00:00",
+ "modified_by": "Administrator",
+ "module": "BWH Payments",
+ "name": "Braintree Gateway Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,42 @@
+{
+ "actions": [],
+ "creation": "2026-10-11 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "currency",
+  "merchant_account_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Currency",
+   "options": "Currency",
+   "reqd": 1
+  },
+  {
+   "description": "From Braintree: gear icon, Business, Merchant Accounts. This is not the Merchant ID.",
+   "fieldname": "merchant_account_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Merchant Account ID",
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-11 00:00:00",
+ "modified_by": "Administrator",
+ "module": "BWH Payments",
+ "name": "Braintree Merchant Account",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

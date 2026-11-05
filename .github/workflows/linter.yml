@@ -1,8 +1,15 @@
 name: Linters
 
 on:
+  push:
+    branches:
+      - develop
+      - v1-stable
   pull_request:
+  merge_group:
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 1'
 
 permissions:
   contents: read
@@ -15,7 +22,7 @@ jobs:
   linter:
     name: 'Frappe Linter'
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'schedule'
 
     steps:
       - uses: actions/checkout@v6
@@ -36,6 +43,8 @@ jobs:
   deps-vulnerable-check:
     name: 'Vulnerable Dependency Check'
     runs-on: ubuntu-latest
+    # Off merge_group/push so a newly published CVE can't block a queued merge.
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/setup-python@v6

@@ -3,13 +3,18 @@ from frappe import _
 from frappe.integrations.utils import create_request_log
 from frappe.rate_limiter import rate_limit
 
+from bwh_payments.base_class import WebhookEvent
+from bwh_payments.bwh_payments.utils import run_as_administrator
+from bwh_payments.services import GatewayUnavailableError
+
 WEBHOOK_ACCEPTED = {"status": "ok"}
+WEBHOOK_SAVEPOINT = "bwh_payments_webhook"
 
 
+# nosemgrep: guest-whitelisted-method  # gateways post unauthenticated; each verifier checks the signature
 @frappe.whitelist(allow_guest=True, methods=["POST"])
 @rate_limit(limit=120, seconds=60, ip_based=True)
 def handle():
-	"""Public gateway callback. Everything here is untrusted until the gateway's own signature clears it."""
 	gateway = frappe.request.args.get("gateway")
 	if not gateway:
 		return reject()
@@ -24,28 +29,22 @@ def handle():
 	headers = dict(frappe.request.headers)
 
 	try:
-		result = frappe.get_single(profile.gateway_settings).handle_webhook(payload, headers)
+		event = frappe.get_single(profile.gateway_settings).handle_webhook(payload, headers)
+		# Inside the try: an unparseable verified event is still a 400, so the gateway retries.
+		event = WebhookEvent.model_validate(event) if event else None
 	except Exception:
-		# The payload can carry cardholder data, so only the gateway and the traceback are recorded.
+		# Never log the payload: it can carry cardholder data.
 		frappe.log_error(title=f"{gateway} webhook verification failed")
 		log_webhook(gateway, status="Failed")
 		return reject()
 
-	if not result:
+	if not event:
 		log_webhook(gateway, status="Completed")
 		return WEBHOOK_ACCEPTED
 
-	session_id = result.get("session_id")
-	status = result.get("status")
-	event_id = result.get("event_id")
-
-	if not (session_id and status):
-		log_webhook(gateway, event_id=event_id, status="Failed")
-		return WEBHOOK_ACCEPTED
-
-	request_name = frappe.db.get_value("Gateway Payment Request", {"order_ref": session_id}, "name")
+	request_name = find_payment_request(event)
 	if not request_name:
-		log_webhook(gateway, session_id=session_id, event_id=event_id, status="Failed")
+		log_webhook(gateway, event=event, status="Failed")
 		return WEBHOOK_ACCEPTED
 
 	payment_request = frappe.get_doc("Gateway Payment Request", request_name)
@@ -54,44 +53,140 @@ def handle():
 			title=f"{gateway} webhook gateway mismatch",
 			message=f"URL gateway: {gateway}, request gateway: {payment_request.gateway}",
 		)
-		log_webhook(gateway, session_id=session_id, event_id=event_id, status="Failed")
+		log_webhook(gateway, event=event, status="Failed")
 		return reject()
 
-	apply_status_as_administrator(payment_request, status, event_id)
-	log_webhook(gateway, session_id=session_id, event_id=event_id, status="Completed")
-	# A replayed delivery is still a success as far as the gateway is concerned; anything else and it
-	# keeps retrying forever.
+	# The gateway resends until it gets a 2xx, so a redelivery must not queue the event twice.
+	if event.event_id and frappe.db.exists(
+		"Integration Request",
+		{"integration_request_service": f"{gateway} Webhook", "request_id": event.event_id},
+	):
+		return WEBHOOK_ACCEPTED
+
+	log = log_webhook(gateway, event=event, status="Queued", reference_docname=request_name)
+	enqueue_webhook(log.name)
 	return WEBHOOK_ACCEPTED
 
 
-def apply_status_as_administrator(payment_request, status: str, event_id: str | None):
-	# The callback arrives as Guest, but downstream order creation needs a real user context. Restore the
-	# original user afterwards so a long-lived worker does not keep Administrator for the next job.
-	session_user = frappe.session.user
+def find_payment_request(event: WebhookEvent) -> str | None:
+	if not event.refund_id:
+		return frappe.db.get_value("Gateway Payment Request", {"order_ref": event.session_id}, "name")
+
+	if request_name := frappe.db.get_value(
+		"Gateway Refund", {"refund_id": event.refund_id}, "payment_request"
+	):
+		return request_name
+	# A refund raised in the gateway's dashboard is only known by the payment it refunds.
+	if event.transaction_ref:
+		return frappe.db.get_value(
+			"Gateway Payment Request", {"gateway_transaction_ref": event.transaction_ref}, "name"
+		)
+	return None
+
+
+def enqueue_webhook(integration_request: str):
+	frappe.enqueue(
+		"bwh_payments.bwh_payments.webhook.process_webhook",
+		queue="short",
+		integration_request=integration_request,
+		now=frappe.in_test,
+	)
+
+
+def process_webhook(integration_request: str):
+	"""Apply a verified event that `handle` logged and queued.
+
+	It runs in a job so a broken referenced document cannot turn the gateway's delivery into a 500
+	that it retries until it disables the endpoint. A failure is logged and can be retried with
+	`retry_webhook` once fixed.
+	"""
+	log = frappe.get_doc("Integration Request", integration_request)
+	event = WebhookEvent.model_validate(frappe.parse_json(log.data))
+
+	frappe.db.savepoint(WEBHOOK_SAVEPOINT)
 	try:
-		frappe.set_user("Administrator")
-		payment_request.apply_webhook_status(status, event_id)
-	finally:
-		frappe.set_user(session_user)
+		payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
+		apply_event_as_administrator(payment_request, event)
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError) as error:
+		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
+		# Frappe's job runner retries only RetryBackgroundJobError, not the DB errors it wraps.
+		raise frappe.RetryBackgroundJobError from error
+	except GatewayUnavailableError as error:
+		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
+		# Failed and committed first, so it stays retryable by hand once Frappe's own retries run out.
+		log.handle_failure({"error": repr(error)})
+		frappe.db.commit()  # nosemgrep
+		raise frappe.RetryBackgroundJobError from error
+	except Exception as error:
+		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
+		frappe.log_error(title=f"{log.integration_request_service} could not be applied")
+		log.handle_failure({"error": repr(error)})
+		return
+
+	log.db_set("status", "Completed")
+
+
+@frappe.whitelist(methods=["POST"])
+def retry_webhook(integration_request: str) -> None:
+	frappe.only_for("System Manager")
+
+	log = frappe.get_doc("Integration Request", integration_request)
+	if log.reference_doctype != "Gateway Payment Request" or log.status not in ("Queued", "Failed"):
+		frappe.throw(_("Only a queued or failed payment webhook can be retried"))
+
+	log.db_set("status", "Queued")
+	enqueue_webhook(log.name)
+
+
+def apply_event_as_administrator(payment_request, event: WebhookEvent):
+	with run_as_administrator():
+		if event.refund_id:
+			apply_refund_event(payment_request, event)
+		elif event.sync_status:
+			payment_request.sync_status()
+		else:
+			payment_request.apply_webhook_status(event.status, event.event_id)
+
+
+def apply_refund_event(payment_request, event: WebhookEvent):
+	if name := frappe.db.get_value("Gateway Refund", {"refund_id": event.refund_id}, "name"):
+		refund = frappe.get_doc("Gateway Refund", name)
+	elif frappe.db.exists(
+		"Gateway Refund",
+		{"payment_request": payment_request.name, "refund_id": ["is", "not set"], "status": "Pending"},
+	):
+		# One of our refunds is still waiting for the gateway's answer and may be this one; recording
+		# it now as a stranger would count it twice.
+		raise frappe.RetryBackgroundJobError
+	else:
+		refund = payment_request.record_external_refund(event.refund_id, event.refund_amount)
+
+	refund.apply_gateway_status(event.status, event.event_id)
 
 
 def reject() -> dict:
-	"""One opaque 400 for every verification failure.
+	"""One opaque 400 for every failure, so callers cannot probe gateways or verifiers.
 
-	A caller who can tell "unknown gateway" from "bad signature" apart can enumerate which gateways this
-	site has configured and probe how far a forged payload gets. The detail stays in the Error Log and the
-	Integration Request. Clearing the message log stops a `frappe.throw` raised inside a gateway's
-	verifier from being echoed back to the caller in `_server_messages`.
+	The message log is cleared so a verifier's `frappe.throw` does not leak in `_server_messages`.
 	"""
 	frappe.local.message_log = []
 	frappe.local.response["http_status_code"] = 400
 	return {"status": "error", "message": _("Webhook could not be verified")}
 
 
-def log_webhook(gateway: str, session_id: str | None = None, event_id: str | None = None, status="Queued"):
-	create_request_log(
-		{"gateway": gateway, "session_id": session_id, "event_id": event_id},
+def log_webhook(
+	gateway: str,
+	status: str = "Queued",
+	event: WebhookEvent | None = None,
+	reference_docname: str | None = None,
+):
+	# The parsed event only: ids, statuses and amounts, never the delivered payload.
+	data = {"gateway": gateway, **(event.model_dump(exclude_none=True) if event else {})}
+	return create_request_log(
+		data,
 		service_name=f"{gateway} Webhook",
 		status=status,
 		reference_doctype="Gateway Payment Request",
+		reference_docname=reference_docname,
+		request_id=event.event_id if event else None,
 	)
