@@ -13,7 +13,7 @@ from werkzeug.wrappers import Request
 
 from bwh_payments.bwh_payments import webhook
 from bwh_payments.bwh_payments.utils import run_as_administrator
-from bwh_payments.currency import to_minor_units
+from bwh_payments.currency import from_minor_units, to_minor_units
 from bwh_payments.services.razorpay.stub import (  # nosemgrep: frappe-monkey-patching-not-allowed
 	StubRazorpayClient,
 	build_refund_event,
@@ -69,7 +69,9 @@ def remove_test_gateway(name: str = TEST_GATEWAY):
 	requests = frappe.get_all("Gateway Payment Request", filters={"gateway": name}, pluck="name")
 	if requests:
 		frappe.db.delete("Gateway Refund", {"payment_request": ["in", requests]})
+		frappe.db.delete("Gateway Payment Split", {"parent": ["in", requests]})
 		frappe.db.delete("Gateway Payment Request", {"name": ["in", requests]})
+	frappe.db.delete("Gateway Linked Account", {"gateway": name})
 	frappe.db.delete("Integration Request", {"integration_request_service": f"{name} Webhook"})
 	frappe.delete_doc(
 		"Payment Gateway Profile", name, ignore_missing=True, ignore_permissions=True, force=True
@@ -82,6 +84,42 @@ def pay(payment_request: str):
 	StubRazorpayClient.pay(doc.order_ref)
 	with run_as_administrator():
 		doc.sync_status()
+
+
+def create_test_linked_account(ref_doctype: str, ref_docname: str, gateway: str = TEST_GATEWAY) -> str:
+	"""An Active linked account paying `ref_docname` on the in-memory gateway. Returns its name."""
+	return (
+		frappe.get_doc(
+			{
+				"doctype": "Gateway Linked Account",
+				"gateway": gateway,
+				"account_id": f"acc_{frappe.generate_hash(length=12)}",
+				"status": "Active",
+				"ref_doctype": ref_doctype,
+				"ref_docname": ref_docname,
+			}
+		)
+		.insert(ignore_permissions=True)
+		.name
+	)
+
+
+def set_linked_account_activation(linked_account: str, status: str, requirements: list[dict] | None = None):
+	"""What the gateway now says about an onboarded account: "activated", "needs_clarification" and so on."""
+	reference = frappe.db.get_value("Gateway Linked Account", linked_account, "gateway_reference")
+	StubRazorpayClient.set_activation_status(frappe.parse_json(reference)["product_id"], status, requirements)
+
+
+def get_reversed_amount(payment_request: str) -> float:
+	"""How much the gateway has pulled back from the payment's linked accounts, in major units."""
+	doc = frappe.get_doc("Gateway Payment Request", payment_request)
+	transfer_ids = {split.transfer_id for split in doc.splits}
+	reversed_amount = sum(
+		reversal["amount"]
+		for reversal in StubRazorpayClient.created_reversals
+		if reversal["transfer_id"] in transfer_ids
+	)
+	return from_minor_units(reversed_amount, doc.currency_code)
 
 
 def set_next_refund_status(status: str):

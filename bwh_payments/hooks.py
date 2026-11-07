@@ -15,5 +15,14 @@ doc_events = {
 	},
 }
 
+scheduler_events = {
+	"hourly": [
+		"bwh_payments.bwh_payments.doctype.gateway_linked_account.gateway_linked_account.sync_unsettled_accounts",
+	],
+	"daily": [
+		"bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_request.sync_open_split_transfers",
+	],
+}
+
 export_python_type_annotations = True
 require_type_annotated_api_methods = True

@@ -85,3 +85,19 @@ class TestConsumerTestHelpers(IntegrationTestCase):
 		frappe.db.rollback()
 
 		self.assertFalse(frappe.db.exists("Gateway Refund", gateway_refund.name))
+
+	def test_a_split_payment_reverses_the_linked_accounts_share_on_refund(self):
+		linked_account = testing.create_test_linked_account("Currency", "INR")
+		payment_request = create_payment(
+			"Currency",
+			"INR",
+			100,
+			"INR",
+			self.gateway,
+			splits=[{"linked_account": linked_account, "amount": 80}],
+		)
+		testing.pay(payment_request.name)
+
+		refund(payment_request.name, 50)
+
+		self.assertEqual(testing.get_reversed_amount(payment_request.name), 40)

@@ -92,7 +92,7 @@ To add a service, copy `services/razorpay/` and wire `get_client()` the same way
 as it stands.
 
 - `create_payment(ref_doctype, ref_docname, amount, currency, gateway, **fields)`: `fields` limited to
-  `company`, `redirect_to` (a path on this site) and `customer_*`.
+  `company`, `redirect_to` (a path on this site), `customer_*` and `splits` (see Splits below).
 - `get_payment_gateways` (names), `get_gateway_options(currency=None)` (`GatewayOption`: name, title,
   logos), `validate_currency(gateway, currency)`, `resolve_payment_mode`.
 - `get_gateways()` (`GatewayInfo`): every installed gateway, enabled or not, with its settings DocType,
@@ -102,6 +102,9 @@ as it stands.
 - `record_external_payment` / `record_external_refund`: import history settled elsewhere, idempotent,
   no callbacks.
 - `to_minor_units`, `from_minor_units`.
+- Splits: `supports_splits(gateway, currency)`, `get_linked_account(gateway, ref_doctype, ref_docname)`,
+  `submit_linked_account(gateway, ref_doctype, ref_docname, details)`, `sync_linked_account`,
+  `set_split_hold(payment_request, hold_until)`.
 
 Callbacks on the referenced document: when a request turns `Paid`, `on_update` calls
 `run_method("on_payment_authorized", "Completed")` once (the frappe/payments convention). Every Gateway
@@ -110,7 +113,8 @@ An insert that is already settled is an import and fires neither.
 
 `bwh_payments/testing.py` lets consumer apps test against the in-memory gateway without naming a provider:
 `configure_test_gateway`, `pay`, `set_next_refund_status`, `set_refund_status`, `send_refund_webhook`,
-`send_external_refund_webhook`, `without_commits`. `bwh_payments/migrate/frappe_payments.py`
+`send_external_refund_webhook`, `without_commits`, `create_test_linked_account`,
+`set_linked_account_activation`, `get_reversed_amount`. `bwh_payments/migrate/frappe_payments.py`
 `import_gateways()` turns frappe/payments gateways into profiles with the same names.
 
 ### Payment flow
@@ -154,8 +158,8 @@ An insert that is already settled is an import and fires neither.
   `stripe.api_key`). SDK objects are attribute-based (no `.get()`), so the live client parses with `from_attributes=True`.
   Refund events: `refund.created`, `refund.updated`, `refund.failed`, `charge.refund.updated`.
   `stripe>=12.5` cannot share a venv cleanly with frappe/payments' `stripe~=10.12` pin.
-- **Razorpay**: raw HTTP (Payment Links API) via `frappe.integrations.utils.make_post_request` /
-  `make_get_request`, no SDK. Refund events: `refund.created` (pending), `refund.processed`,
+- **Razorpay**: raw HTTP (Payment Links, Refunds and Route APIs) via `frappe.integrations.utils.make_request`,
+  no SDK. Refund events: `refund.created` (pending), `refund.processed`,
   `refund.failed`. A session id starting `pay_` is a payment imported from before Payment Links and is
   refunded directly.
 - **Telr**: no signed webhook. `handle_webhook` returns `None` on purpose; status comes only from
@@ -214,6 +218,29 @@ An insert that is already settled is an import and fires neither.
   `apply_gateway_status("processed" | "failed")` on the Gateway Refund. An STK query asked before the shopper answers is a
   `500.001.1001` refusal, the same code as wrong credentials, so the live client tells them apart by
   message and raises `MpesaStillProcessingError`, which `get_payment_status` reads as Pending.
+
+### Splits (Razorpay Route)
+
+A caller can send part of a payment on to a third party's **Gateway Linked Account** (`ref_doctype` /
+`ref_docname` is who it pays, e.g. a Buzz Team; only an `Active` one receives). `create_payment(...,
+splits=[{"linked_account", "amount", "hold_until"}])` stores them as **Gateway Payment Split** rows; the
+gateway gets them as `PaymentSplit`s in `create_session(splits=...)`, passed only when set. Gateways opt in
+through `split_currencies()` (empty by default); Razorpay splits INR only. bwh_payments decides no policy:
+amounts and hold dates come from the caller, built on the server, never from request input.
+
+- Razorpay sends splits as the payment link's `options.order.transfers`, so it makes each transfer on
+  capture and releases `on_hold_until` itself. On the move to Paid the request reads the transfers back
+  (best effort, like `gateway_transaction_ref`); the daily `sync_open_split_transfers` follows them until
+  they settle or fail, skipping those still on hold.
+- Refunds reverse first, then refund, under a per-payment `named_lock`. Each transfer is reversed to a
+  cumulative proportional target (`route.get_reversal_due`), so a retry never reverses twice and the last
+  refund takes what is left. `reverse_all` is never sent: it reverses everything. A refused reversal raises,
+  so the shopper is not refunded with money we did not get back. A dashboard refund reverses nothing.
+- Onboarding (`submit_linked_account`) commits the new account first, then each id Razorpay hands back
+  (account, stakeholder, route product), so a failure halfway resumes. Resubmitting updates instead. The
+  details (PAN, bank account) go to Razorpay and are never stored or logged. `activation_status` maps to
+  `status`; the hourly `sync_unsettled_accounts` follows accounts that are not Active yet. An account added
+  by hand from the dashboard has no product id and keeps the status it was given.
 
 ### Money and currency rules
 
