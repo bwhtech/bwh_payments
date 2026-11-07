@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
+from frappe import _
 from frappe.model.base_document import get_controller
 from frappe.utils.caching import redis_cache
 
@@ -100,3 +101,22 @@ def is_local_path(url: str | None) -> bool:
 		return False
 	parts = urlsplit(url)
 	return not (parts.scheme or parts.netloc)
+
+
+def acquire_named_lock(name: str, timeout: int) -> bool:
+	"""A MariaDB named lock: unlike a row lock it survives the commits `create_request_log` makes."""
+	return bool(frappe.db.sql("SELECT GET_LOCK(%s, %s)", (name, timeout))[0][0])
+
+
+def release_named_lock(name: str):
+	frappe.db.sql("SELECT RELEASE_LOCK(%s)", (name,))
+
+
+@contextmanager
+def named_lock(name: str, timeout: int = 30):
+	if not acquire_named_lock(name, timeout):
+		frappe.throw(_("Another request for this payment is in progress. Please wait and retry."))
+	try:
+		yield
+	finally:
+		release_named_lock(name)
