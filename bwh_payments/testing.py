@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from functools import cache
 
 import frappe
+from frappe.query_builder import Field
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
@@ -74,8 +75,8 @@ def configure_test_gateway(name: str = TEST_GATEWAY) -> str:
 @cache
 def keep_site_settings():
 	rows = {
-		table: frappe.db.sql(f"select * from `{table}` where doctype = %s", SETTINGS, as_dict=True)
-		for table in ("tabSingles", "__Auth")
+		name: frappe.qb.from_(name).select("*").where(Field("doctype") == SETTINGS).run(as_dict=True)
+		for name in ("Singles", "__Auth")
 	}
 	atexit.register(restore_site_settings, frappe.local.site, rows)
 
@@ -84,14 +85,12 @@ def restore_site_settings(site: str, rows: dict):
 	frappe.init(site)
 	frappe.connect()
 	try:
-		for table, table_rows in rows.items():
-			frappe.db.sql(f"delete from `{table}` where doctype = %s", SETTINGS)
-			for row in table_rows:
-				columns = ", ".join(f"`{column}`" for column in row)
-				placeholders = ", ".join(["%s"] * len(row))
-				frappe.db.sql(
-					f"insert into `{table}` ({columns}) values ({placeholders})", list(row.values())
-				)
+		for name, table_rows in rows.items():
+			frappe.qb.from_(name).delete().where(Field("doctype") == SETTINGS).run()
+			if table_rows:
+				frappe.qb.into(name).columns(*table_rows[0]).insert(
+					*(tuple(row.values()) for row in table_rows)
+				).run()
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 		frappe.clear_document_cache(SETTINGS)
 	finally:
