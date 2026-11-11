@@ -5,7 +5,9 @@ webhook code without naming a provider or touching the network. Refunds and webh
 wrap the test class in `without_commits()`, or call `remove_test_gateway()` after the class rollback.
 """
 
+import atexit
 from contextlib import contextmanager
+from functools import cache
 
 import frappe
 from werkzeug.test import EnvironBuilder
@@ -45,7 +47,11 @@ def reset():
 
 
 def configure_test_gateway(name: str = TEST_GATEWAY) -> str:
-	"""An enabled Payment Gateway Profile on the in-memory gateway. Returns its name."""
+	"""An enabled Payment Gateway Profile on the in-memory gateway. Returns its name.
+
+	The site's own Razorpay settings come back when the test process exits.
+	"""
+	keep_site_settings()
 	settings = frappe.get_single(SETTINGS)
 	settings.update(
 		{
@@ -63,6 +69,33 @@ def configure_test_gateway(name: str = TEST_GATEWAY) -> str:
 			{"doctype": "Payment Gateway Profile", "name": name, "gateway_settings": SETTINGS, "enabled": 1}
 		).insert(ignore_permissions=True)
 	return name
+
+
+@cache
+def keep_site_settings():
+	rows = {
+		table: frappe.db.sql(f"select * from `{table}` where doctype = %s", SETTINGS, as_dict=True)
+		for table in ("tabSingles", "__Auth")
+	}
+	atexit.register(restore_site_settings, frappe.local.site, rows)
+
+
+def restore_site_settings(site: str, rows: dict):
+	frappe.init(site)
+	frappe.connect()
+	try:
+		for table, table_rows in rows.items():
+			frappe.db.sql(f"delete from `{table}` where doctype = %s", SETTINGS)
+			for row in table_rows:
+				columns = ", ".join(f"`{column}`" for column in row)
+				placeholders = ", ".join(["%s"] * len(row))
+				frappe.db.sql(
+					f"insert into `{table}` ({columns}) values ({placeholders})", list(row.values())
+				)
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+		frappe.clear_document_cache(SETTINGS)
+	finally:
+		frappe.destroy()
 
 
 def remove_test_gateway(name: str = TEST_GATEWAY):
