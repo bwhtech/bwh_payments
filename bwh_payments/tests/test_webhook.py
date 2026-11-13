@@ -181,6 +181,37 @@ class TestWebhook(IntegrationTestCase):
 		self.assertEqual(log.status, "Failed")
 		self.assertEqual(log.reference_docname, payment_request.name)
 
+	def test_a_document_that_fails_to_settle_leaves_no_commit_callbacks_behind(self):
+		payment_request = make_payment_request(100, "SAR")
+		ran = []
+
+		def queue_callbacks_then_fail(*args):
+			frappe.db.after_commit.add(lambda: ran.append("after_commit"))
+			frappe.db.after_rollback.add(lambda: ran.append("after_rollback"))
+			raise Exception("broken")
+
+		with patch.object(
+			Currency, "on_payment_authorized", create=True, side_effect=queue_callbacks_then_fail
+		):
+			self.post_paid_event(payment_request, "evt_settle_fails_callbacks")
+		# What the job runner's commit would do once the delivery is marked Failed.
+		frappe.db.after_commit.run()
+
+		self.assertEqual(ran, ["after_rollback"])
+
+	def test_a_settled_document_keeps_its_commit_callbacks(self):
+		payment_request = make_payment_request(100, "SAR")
+		ran = []
+
+		def queue_callback(*args):
+			frappe.db.after_commit.add(lambda: ran.append("after_commit"))
+
+		with patch.object(Currency, "on_payment_authorized", create=True, side_effect=queue_callback):
+			self.post_paid_event(payment_request, "evt_settles_callbacks")
+		frappe.db.after_commit.run()
+
+		self.assertEqual(ran, ["after_commit"])
+
 	def test_a_failed_delivery_settles_when_retried_after_the_fix(self):
 		payment_request = make_payment_request(100, "SAR")
 		with patch.object(Currency, "on_payment_authorized", create=True, side_effect=Exception("broken")):
