@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class GatewayResult(BaseModel):
@@ -46,6 +47,32 @@ class WebhookEvent(GatewayResult):
 		if not (self.session_id or self.refund_id):
 			raise ValueError("A webhook event needs a session_id or a refund_id")
 		return self
+
+
+class PaymentSplit(GatewayResult):
+	"""Part of a payment the gateway sends on to a linked account. `amount` is in major units."""
+
+	account_id: str
+	amount: float
+	# Timezone-aware. None: the share is paid out on the gateway's usual schedule.
+	hold_until: datetime | None = None
+
+
+class SplitTransfer(GatewayResult):
+	"""What the gateway made of a split once the payment was captured."""
+
+	account_id: str
+	transfer_id: str
+	transfer_status: str | None = None
+	settlement_status: str | None = None
+
+
+class LinkedAccountState(GatewayResult):
+	"""A linked account as the gateway reports it. `status` is a Gateway Linked Account status."""
+
+	status: str
+	gateway_status: str | None = None
+	requirements: list[dict] = Field(default_factory=list)
 
 
 class GatewayOption(BaseModel):
@@ -108,6 +135,27 @@ class PaymentGatewayBase(ABC):
 	def supported_currencies(self) -> tuple[str, ...] | None:
 		"""ISO codes this gateway can charge in, or None for any currency the site has."""
 		return None
+
+	def split_currencies(self) -> tuple[str, ...]:
+		"""ISO codes in which `create_session` can send part of a payment to linked accounts."""
+		return ()
+
+	def get_split_transfers(self, session_id: str) -> list[SplitTransfer] | None:
+		"""The transfers the gateway made for a paid session's splits, or None when it cannot say."""
+		return None
+
+	def set_split_hold(self, transfer_id: str, hold_until: datetime | None) -> None:
+		raise NotImplementedError
+
+	def submit_linked_account(self, account, details: dict) -> None:
+		"""Create `account` (a Gateway Linked Account) on the gateway, or update what the gateway holds.
+
+		Store each id the gateway hands back as soon as it exists, so a failure halfway can resume.
+		"""
+		raise NotImplementedError
+
+	def get_linked_account_state(self, account) -> LinkedAccountState:
+		raise NotImplementedError
 
 	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult | None:
 		"""What the gateway now says about a refund, or None when it cannot be asked."""

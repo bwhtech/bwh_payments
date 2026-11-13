@@ -1,17 +1,24 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # For license information, please see license.txt
 
+from zoneinfo import ZoneInfo
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import add_days, get_datetime, get_system_timezone, now_datetime
 from frappe.utils.data import cstr, flt
 
-from bwh_payments.base_class import CheckoutSession, RefundResult
+from bwh_payments.base_class import CheckoutSession, PaymentSplit, RefundResult, SplitTransfer
 from bwh_payments.bwh_payments.checkout import get_return_url
 from bwh_payments.bwh_payments.utils import is_local_path
 from bwh_payments.currency import get_minor_unit_exponent
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
+SPLIT_SYNC_STATUSES = ("Paid", "Partially Refunded", "Refunded")
+MOVING_TRANSFER_STATUSES = ("created", "pending")
+PAID_OUT_TRANSFER_STATUSES = ("processed", "partially_reversed")
+UNSEEN_TRANSFER_DAYS = 30
 WEBHOOK_WRITABLE_STATUSES = ("Paid", "Not Paid", "Cancelled", "Expired")
 
 
@@ -23,6 +30,10 @@ class GatewayPaymentRequest(Document):
 
 	if TYPE_CHECKING:
 		from frappe.types import DF
+
+		from bwh_payments.bwh_payments.doctype.gateway_payment_split.gateway_payment_split import (
+			GatewayPaymentSplit,
+		)
 
 		amount: DF.Currency
 		cancel_url: DF.Data | None
@@ -41,11 +52,13 @@ class GatewayPaymentRequest(Document):
 		last_webhook_event_id: DF.Data | None
 		order_ref: DF.Data | None
 		order_url: DF.SmallText | None
+		redirect_to: DF.Data | None
 		ref_docname: DF.DynamicLink
 		ref_doctype: DF.Link
 		refund_amount: DF.Currency
 		refund_id: DF.SmallText | None
 		refund_payment_entries: DF.SmallText | None
+		splits: DF.Table[GatewayPaymentSplit]
 		status: DF.Literal[
 			"Pending", "Paid", "Not Paid", "Cancelled", "Expired", "Partially Refunded", "Refunded"
 		]
@@ -56,6 +69,7 @@ class GatewayPaymentRequest(Document):
 		self.validate_new_checkout_is_pending()
 		self.validate_redirect_to()
 		self.validate_amount_precision()
+		self.validate_splits()
 
 	def validate_redirect_to(self):
 		if self.redirect_to and not is_local_path(self.redirect_to):
@@ -80,11 +94,46 @@ class GatewayPaymentRequest(Document):
 			title=_("Currency Precision Too Low"),
 		)
 
+	def validate_splits(self):
+		if not self.is_new() or not self.splits:
+			return
+
+		if self.currency_code.upper() not in self.get_gateway_settings().split_currencies():
+			frappe.throw(
+				_("{0} cannot split payments in {1}").format(
+					frappe.bold(self.gateway), frappe.bold(self.currency_code)
+				)
+			)
+
+		accounts = [split.linked_account for split in self.splits]
+		if len(set(accounts)) != len(accounts):
+			frappe.throw(_("A payment can send only one split to each linked account"))
+		for split in self.splits:
+			self.validate_split(split)
+
+		precision = get_minor_unit_exponent(self.currency_code)
+		total = flt(sum(flt(split.amount) for split in self.splits), precision)
+		if total > flt(self.amount, precision):
+			frappe.throw(_("Splits total {0}, more than the payment of {1}").format(total, self.amount))
+
+	def validate_split(self, split):
+		if flt(split.amount) <= 0:
+			frappe.throw(_("A split amount must be greater than zero"))
+
+		gateway, status = frappe.db.get_value(
+			"Gateway Linked Account", split.linked_account, ["gateway", "status"]
+		) or (None, None)
+		if gateway != self.gateway or status != "Active":
+			frappe.throw(
+				_("Linked account {0} is not active on {1}").format(split.linked_account, self.gateway)
+			)
+
 	def before_save(self):
 		if not self.order_ref:
 			self.create_session()
 		elif not self.is_new() and self.has_value_changed("status") and self.status == "Paid":
 			self.gateway_transaction_ref = self.gateway_transaction_ref or self.fetch_transaction_ref()
+			self.fetch_split_transfers()
 
 	def on_update(self):
 		# frappe/payments convention, so apps written for it settle orders unchanged.
@@ -105,15 +154,20 @@ class GatewayPaymentRequest(Document):
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
-		# Passed only when set, so gateways written before return_url keep working.
-		return_url = {"return_url": get_return_url(self.name)} if self.redirect_to else {}
+		# Passed only when set, so gateways written before them keep working.
+		optional = {}
+		if self.redirect_to:
+			optional["return_url"] = get_return_url(self.name)
+		if self.splits:
+			optional["splits"] = [self.get_payment_split(split) for split in self.splits]
+
 		session = CheckoutSession.model_validate(
 			self.get_gateway_settings().create_session(
 				flt(self.amount),
 				self.currency_code,
 				reference=self.name,
 				customer=self.get_customer_details(),
-				**return_url,
+				**optional,
 			)
 		)
 		self.order_ref = session.session_id
@@ -121,6 +175,52 @@ class GatewayPaymentRequest(Document):
 		self.success_url = session.success_url
 		self.cancel_url = session.cancel_url
 		self.failure_url = session.failure_url
+
+	def get_payment_split(self, split) -> PaymentSplit:
+		return PaymentSplit(
+			account_id=split.account_id,
+			amount=flt(split.amount),
+			hold_until=to_aware_datetime(split.hold_until),
+		)
+
+	def fetch_split_transfers(self):
+		if not self.splits:
+			return
+		try:
+			transfers = self.get_gateway_settings().get_split_transfers(self.order_ref)
+		except Exception:
+			# Only needed to follow the payout, so a failed lookup must not block the payment.
+			frappe.clear_last_message()
+			frappe.log_error(title=_("Could not read the split transfers for {0}").format(self.name))
+			return
+		self.apply_split_transfers(transfers or [])
+
+	def apply_split_transfers(self, transfers: list):
+		transfers = [SplitTransfer.model_validate(transfer) for transfer in transfers]
+		by_account = {transfer.account_id: transfer for transfer in transfers}
+		for split in self.splits:
+			if transfer := by_account.get(split.account_id):
+				split.transfer_id = transfer.transfer_id
+				split.transfer_status = transfer.transfer_status
+				split.settlement_status = transfer.settlement_status
+
+	def sync_split_transfers(self):
+		transfers = self.get_gateway_settings().get_split_transfers(self.order_ref)
+		# Locked after the slow gateway call, as in sync_status.
+		self.lock_row()
+		self.apply_split_transfers(transfers or [])
+		self.save(ignore_permissions=True)
+
+	def set_split_hold(self, hold_until):
+		"""Move the hold on every transfer this payment made, e.g. when the event it paid for moves."""
+		# A transfer made after the Paid-time lookup is only known once read back.
+		self.fetch_split_transfers()
+		settings = self.get_gateway_settings()
+		for split in self.splits:
+			split.hold_until = hold_until
+			if split.transfer_id:
+				settings.set_split_hold(split.transfer_id, to_aware_datetime(hold_until))
+		self.save(ignore_permissions=True)
 
 	def fetch_transaction_ref(self) -> str | None:
 		try:
@@ -375,6 +475,47 @@ class GatewayPaymentRequest(Document):
 		self.last_webhook_event_id = event_id
 		self.save(ignore_permissions=True)
 		return True
+
+
+def to_aware_datetime(value):
+	"""A Datetime field holds naive values in the system time zone."""
+	if not value:
+		return None
+	return get_datetime(value).replace(tzinfo=ZoneInfo(get_system_timezone()))
+
+
+def sync_open_split_transfers():
+	"""Daily: read back transfers that have not settled yet, so a failed transfer surfaces."""
+	for name in get_requests_with_open_splits():
+		try:
+			frappe.get_doc("Gateway Payment Request", name).sync_split_transfers()
+		except Exception:
+			frappe.log_error(title=f"Could not sync the split transfers for {name}")
+
+
+def get_requests_with_open_splits() -> list[str]:
+	request = frappe.qb.DocType("Gateway Payment Request")
+	split = frappe.qb.DocType("Gateway Payment Split")
+	# Razorpay makes a transfer on capture, so one still unseen after a month never will be.
+	unseen = (split.transfer_id.isnull() | (split.transfer_id == "")) & (
+		request.creation > add_days(now_datetime(), -UNSEEN_TRANSFER_DAYS)
+	)
+	moving = split.transfer_status.isin(MOVING_TRANSFER_STATUSES)
+	# A held transfer changes only once its hold ends, and events are booked months ahead.
+	released = split.hold_until.isnull() | (split.hold_until <= now_datetime())
+	unsettled = split.transfer_status.isin(PAID_OUT_TRANSFER_STATUSES) & (
+		split.settlement_status.isnull() | (split.settlement_status != "settled")
+	)
+	return (
+		frappe.qb.from_(split)
+		.join(request)
+		.on(request.name == split.parent)
+		.select(request.name)
+		.distinct()
+		.where(request.status.isin(SPLIT_SYNC_STATUSES))
+		.where(unseen | moving | (unsettled & released))
+		.run(pluck=True)
+	)
 
 
 def get_original_payment_entry(payment_entry: str | int) -> str:

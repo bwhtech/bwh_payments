@@ -10,8 +10,25 @@ from frappe.model.document import Document
 from frappe.utils import validate_email_address
 from frappe.utils.data import flt
 
-from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
-from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
+from bwh_payments.base_class import (
+	CheckoutSession,
+	LinkedAccountState,
+	PaymentGatewayBase,
+	PaymentSplit,
+	RefundResult,
+	SplitTransfer,
+	WebhookEvent,
+)
+from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.linked_account import RazorpayLinkedAccount
+from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.route import (
+	ROUTE_CURRENCIES,
+	build_hold,
+	build_transfer,
+	has_splits,
+	read_split_transfer,
+	reverse_split_transfers,
+)
+from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url, named_lock
 from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
 from bwh_payments.services.razorpay.base import BaseRazorpayClient, RazorpayPaymentLink
 from bwh_payments.services.razorpay.live import LiveRazorpayClient
@@ -83,6 +100,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		reference: str | None = None,
 		customer: dict | None = None,
 		return_url: str | None = None,
+		splits: list[PaymentSplit] | None = None,
 	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
@@ -102,6 +120,10 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		}
 		if customer_details := get_customer_details(customer or {}):
 			payload["customer"] = customer_details
+		if splits:
+			payload["options"] = {
+				"order": {"transfers": [build_transfer(split, currency) for split in splits]}
+			}
 
 		link = self.get_client().create_payment_link(payload)
 		# A Payment Link has one callback; cancel and failure URLs are only for the storefront.
@@ -184,6 +206,23 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 		return (link.status or "").strip().casefold() == RAZORPAY_CANCELLED_STATUS
 
+	def split_currencies(self) -> tuple[str, ...]:
+		return ROUTE_CURRENCIES
+
+	def get_split_transfers(self, session_id: str) -> list[SplitTransfer]:
+		client = self.get_client()
+		payment_id = get_captured_payment_id(client.get_payment_link(session_id))
+		return [read_split_transfer(transfer) for transfer in client.get_payment_transfers(payment_id)]
+
+	def set_split_hold(self, transfer_id: str, hold_until) -> None:
+		self.get_client().update_transfer(transfer_id, build_hold(hold_until))
+
+	def submit_linked_account(self, account, details: dict) -> None:
+		RazorpayLinkedAccount(self.get_client(), account).submit(details)
+
+	def get_linked_account_state(self, account) -> LinkedAccountState:
+		return RazorpayLinkedAccount(self.get_client(), account).get_state()
+
 	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult:
 		refund = self.get_client().get_refund(refund_id)
 		return RefundResult(refund_id=refund.id, status=refund.status)
@@ -204,7 +243,13 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		else:
 			payment_id = get_captured_payment_id(client.get_payment_link(session_id))
 
-		refund = client.create_refund(payment_id, to_minor_units(amount, currency))
+		amount_in_minor_units = to_minor_units(amount, currency)
+		# Serialised per payment: two refunds working out their reversals at once would under-reverse.
+		with named_lock(f"razorpay_refund_{payment_id}"):
+			# Only a split payment asks: an account without Route cannot read transfers at all.
+			if has_splits(session_id):
+				reverse_split_transfers(client, payment_id, amount_in_minor_units)
+			refund = client.create_refund(payment_id, amount_in_minor_units)
 		if refund.status not in RAZORPAY_ACCEPTED_REFUND_STATUSES:
 			frappe.throw(_("Refund failed with status: {0}").format(refund.status))
 

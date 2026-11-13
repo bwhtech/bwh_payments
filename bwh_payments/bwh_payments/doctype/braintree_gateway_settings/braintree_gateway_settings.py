@@ -20,7 +20,12 @@ from bwh_payments.base_class import (
 	RefundResult,
 	WebhookEvent,
 )
-from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
+from bwh_payments.bwh_payments.utils import (
+	acquire_named_lock,
+	add_reference_id,
+	get_localised_url,
+	release_named_lock,
+)
 from bwh_payments.currency import get_minor_unit_exponent, validate_transaction_currency
 from bwh_payments.services.braintree.base import BaseBraintreeClient, BraintreeResult, BraintreeTransaction
 from bwh_payments.services.braintree.live import LiveBraintreeClient
@@ -301,15 +306,12 @@ class BraintreeGatewaySettings(Document, PaymentGatewayBase):
 
 
 def acquire_session_lock(session_id: str):
-	"""A MariaDB named lock: unlike a row lock it survives the commits `create_request_log` makes."""
-	if not frappe.db.sql(
-		"SELECT GET_LOCK(%s, %s)", (get_session_lock_name(session_id), SESSION_LOCK_TIMEOUT)
-	)[0][0]:
+	if not acquire_named_lock(get_session_lock_name(session_id), SESSION_LOCK_TIMEOUT):
 		frappe.throw(_("Another payment attempt for this order is in progress. Please wait and retry."))
 
 
 def release_session_lock(session_id: str):
-	frappe.db.sql("SELECT RELEASE_LOCK(%s)", (get_session_lock_name(session_id),))
+	release_named_lock(get_session_lock_name(session_id))
 
 
 def get_session_lock_name(session_id: str) -> str:

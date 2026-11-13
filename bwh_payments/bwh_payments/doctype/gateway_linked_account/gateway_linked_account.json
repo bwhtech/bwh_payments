@@ -1,0 +1,138 @@
+{
+ "actions": [],
+ "creation": "2026-11-07 00:00:00.000000",
+ "description": "A third party's account on a gateway, to which part of a payment can be sent.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "gateway",
+  "account_id",
+  "column_break_status",
+  "status",
+  "owner_section",
+  "ref_doctype",
+  "column_break_owner",
+  "ref_docname",
+  "gateway_section",
+  "gateway_status",
+  "gateway_reference",
+  "requirements"
+ ],
+ "fields": [
+  {
+   "fieldname": "gateway",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Gateway",
+   "options": "Payment Gateway Profile",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "The gateway's id for the account, e.g. acc_... on Razorpay.",
+   "fieldname": "account_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account ID",
+   "set_only_once": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "description": "Only an Active account can receive part of a payment.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nActive\nNeeds Clarification\nSuspended",
+   "reqd": 1
+  },
+  {
+   "fieldname": "owner_section",
+   "fieldtype": "Section Break",
+   "label": "Paid To"
+  },
+  {
+   "fieldname": "ref_doctype",
+   "fieldtype": "Link",
+   "label": "Reference DocType",
+   "options": "DocType",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "column_break_owner",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "ref_docname",
+   "fieldtype": "Dynamic Link",
+   "in_standard_filter": 1,
+   "label": "Reference Name",
+   "options": "ref_doctype",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "gateway_section",
+   "fieldtype": "Section Break",
+   "label": "Onboarding"
+  },
+  {
+   "description": "The account's status in the gateway's own words.",
+   "fieldname": "gateway_status",
+   "fieldtype": "Data",
+   "label": "Gateway Status",
+   "read_only": 1
+  },
+  {
+   "description": "Further ids the gateway issued while onboarding, as JSON.",
+   "fieldname": "gateway_reference",
+   "fieldtype": "Small Text",
+   "label": "Gateway Reference",
+   "read_only": 1
+  },
+  {
+   "description": "What the gateway still needs before it activates the account.",
+   "fieldname": "requirements",
+   "fieldtype": "JSON",
+   "label": "Requirements",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-11-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BWH Payments",
+ "name": "Gateway Linked Account",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "ref_docname"
+}

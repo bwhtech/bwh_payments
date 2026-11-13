@@ -1,0 +1,80 @@
+{
+ "actions": [],
+ "creation": "2026-11-07 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "linked_account",
+  "account_id",
+  "amount",
+  "hold_until",
+  "transfer_id",
+  "transfer_status",
+  "settlement_status"
+ ],
+ "fields": [
+  {
+   "fieldname": "linked_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Linked Account",
+   "options": "Gateway Linked Account",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "linked_account.account_id",
+   "fieldname": "account_id",
+   "fieldtype": "Data",
+   "label": "Account ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount",
+   "reqd": 1
+  },
+  {
+   "description": "The gateway holds the share until then. In the system time zone.",
+   "fieldname": "hold_until",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Hold Until"
+  },
+  {
+   "fieldname": "transfer_id",
+   "fieldtype": "Data",
+   "label": "Transfer ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "transfer_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Transfer Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "settlement_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Settlement Status",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BWH Payments",
+ "name": "Gateway Payment Split",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

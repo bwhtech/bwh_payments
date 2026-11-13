@@ -78,6 +78,7 @@ def remove_razorpay_gateway():
 				"Integration Request", log_name, ignore_permissions=True, delete_permanently=True
 			)
 
+	frappe.db.delete("Gateway Linked Account", {"gateway": RAZORPAY_GATEWAY})
 	frappe.delete_doc(
 		"Payment Gateway Profile",
 		RAZORPAY_GATEWAY,
