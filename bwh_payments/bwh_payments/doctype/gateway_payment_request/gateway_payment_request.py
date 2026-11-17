@@ -6,7 +6,13 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils.data import cstr, flt
 
-from bwh_payments.base_class import CheckoutSession, RefundResult
+from bwh_payments.base_class import (
+	CheckoutSession,
+	InlineCheckout,
+	InlineCheckoutDisplay,
+	InlineCheckoutGateway,
+	RefundResult,
+)
 from bwh_payments.bwh_payments.checkout import get_return_url
 from bwh_payments.bwh_payments.utils import is_local_path
 from bwh_payments.currency import get_minor_unit_exponent
@@ -105,10 +111,14 @@ class GatewayPaymentRequest(Document):
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
+		settings = self.get_gateway_settings()
+		if is_inline_gateway(settings) and settings.sdk in (self.flags.inline_sdks or ()):
+			return self.create_inline_session(settings)
+
 		# Passed only when set, so gateways written before return_url keep working.
 		return_url = {"return_url": get_return_url(self.name)} if self.redirect_to else {}
 		session = CheckoutSession.model_validate(
-			self.get_gateway_settings().create_session(
+			settings.create_session(
 				flt(self.amount),
 				self.currency_code,
 				reference=self.name,
@@ -121,6 +131,26 @@ class GatewayPaymentRequest(Document):
 		self.success_url = session.success_url
 		self.cancel_url = session.cancel_url
 		self.failure_url = session.failure_url
+
+	def create_inline_session(self, settings):
+		self.order_ref = settings.create_inline_session(
+			flt(self.amount), self.currency_code, reference=self.name, customer=self.get_customer_details()
+		)
+
+	def get_inline_checkout(self, display: dict | None = None) -> dict | None:
+		"""What the caller's page opens the gateway's SDK with, or None for a link checkout."""
+		settings = self.get_gateway_settings()
+		if self.order_url or self.status != "Pending" or not is_inline_gateway(settings):
+			return None
+		options = settings.get_inline_options(self, InlineCheckoutDisplay.model_validate(display or {}))
+		return InlineCheckout(
+			request=self.name,
+			sdk=settings.sdk,
+			script_url=settings.script_url,
+			redirect_to=self.redirect_to,
+			# Unset options are dropped so the gateway's own defaults apply.
+			options=options.model_dump(exclude_none=True),
+		).model_dump()
 
 	def fetch_transaction_ref(self) -> str | None:
 		try:
@@ -375,6 +405,10 @@ class GatewayPaymentRequest(Document):
 		self.last_webhook_event_id = event_id
 		self.save(ignore_permissions=True)
 		return True
+
+
+def is_inline_gateway(settings) -> bool:
+	return isinstance(settings, InlineCheckoutGateway)
 
 
 def get_original_payment_entry(payment_entry: str | int) -> str:

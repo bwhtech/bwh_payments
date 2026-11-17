@@ -16,6 +16,59 @@ class CheckoutSession(GatewayResult):
 	failure_url: str | None = None
 
 
+class InlineCheckoutDisplay(BaseModel):
+	"""What the caller shows in the in-page checkout. Each gateway maps what its SDK supports."""
+
+	# Autoincrement document names arrive as ints.
+	model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
+
+	name: str | None = None
+	description: str | None = None
+	# A site-relative path or an absolute URL.
+	image: str | None = None
+	# Seconds until the checkout closes itself, e.g. when the caller's hold on the goods ends.
+	timeout: int | None = None
+	notes: dict[str, str] = {}
+	# The prefilled email and name cannot be changed in the checkout.
+	lock_customer: bool = False
+
+
+class InlineCheckout(BaseModel):
+	"""What the caller's page opens the gateway's browser SDK with. Never carries a secret."""
+
+	request: str
+	sdk: str
+	script_url: str
+	options: dict
+	# Where the shopper goes once paid, even when the confirm call fails: the webhook settles it.
+	redirect_to: str | None = None
+
+
+class InlineCheckoutGateway(ABC):
+	"""Mixed into a gateway whose checkout opens in the caller's page through its browser SDK.
+
+	The caller names the SDKs it can open (`create_payment(inline_sdks=...)`); any other gateway,
+	or one the caller cannot open, gets a link checkout as usual.
+	"""
+
+	sdk: str
+	script_url: str
+
+	@abstractmethod
+	def create_inline_session(
+		self, amount: float, currency: str, reference: str | None = None, customer: dict | None = None
+	) -> str:
+		"""Open the gateway's checkout and return its id, kept as the request's `order_ref`."""
+
+	@abstractmethod
+	def get_inline_options(self, payment_request, display: InlineCheckoutDisplay) -> BaseModel:
+		"""What the SDK opens the checkout with, as the gateway's own typed model."""
+
+	@abstractmethod
+	def verify_inline_payment(self, session_id: str, response: dict) -> bool:
+		"""Whether the SDK's response was signed by the gateway for this session."""
+
+
 class RefundResult(GatewayResult):
 	# All optional: read after money moved, so a thin result must not fail.
 	refund_id: str | None = None
