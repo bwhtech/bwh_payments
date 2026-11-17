@@ -7,13 +7,20 @@ import hmac
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import validate_email_address
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
+from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.inline_checkout import (
+	RAZORPAY_ORDER_PAID_STATUS,
+	RazorpayInlineCheckout,
+	get_customer_details,
+	has_authorised_payment,
+	has_status,
+	is_order,
+)
 from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
 from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
-from bwh_payments.services.razorpay.base import BaseRazorpayClient, RazorpayPaymentLink
+from bwh_payments.services.razorpay.base import BaseRazorpayClient, RazorpayPayment
 from bwh_payments.services.razorpay.live import LiveRazorpayClient
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
 
@@ -30,6 +37,7 @@ RAZORPAY_AUTHORISED_STATUS = "authorized"
 RAZORPAY_CANCELLED_STATUS = "cancelled"
 RAZORPAY_CAPTURED_STATUS = "captured"
 RAZORPAY_PAID_EVENT = "payment_link.paid"
+RAZORPAY_ORDER_PAID_EVENT = "order.paid"
 RAZORPAY_REFUND_EVENTS = ("refund.created", "refund.processed", "refund.failed")
 # Payments taken before Payment Links (e.g. imported from frappe/payments) are keyed on the payment id.
 RAZORPAY_PAYMENT_ID_PREFIX = "pay_"
@@ -40,7 +48,7 @@ RAZORPAY_SIGNATURE_HEADER = "X-Razorpay-Signature"
 RAZORPAY_EVENT_ID_HEADER = "X-Razorpay-Event-Id"
 
 
-class RazorpayGatewaySettings(Document, PaymentGatewayBase):
+class RazorpayGatewaySettings(RazorpayInlineCheckout, Document, PaymentGatewayBase):
 	logo = "/assets/bwh_payments/images/gateways/razorpay.svg"
 	logo_dark = "/assets/bwh_payments/images/gateways/razorpay-dark.svg"
 	description = "Cards, UPI, netbanking and wallets. India."
@@ -120,6 +128,9 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		return add_reference_id(self.success_url, reference)
 
 	def get_payment_status(self, session_id: str) -> str:
+		if is_order(session_id):
+			return self.get_order_status(session_id)
+
 		payment_link = self.get_client().get_payment_link(session_id)
 		link_status = (payment_link.status or "").strip().casefold()
 		status = RAZORPAY_LINK_STATUS_MAP.get(link_status, "Pending")
@@ -131,7 +142,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		if (
 			link_status == "created"
 			and self.treat_authorised_as_paid
-			and has_authorised_payment(payment_link)
+			and has_authorised_payment(payment_link.payments or [])
 		):
 			return "Paid"
 
@@ -161,6 +172,8 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		event = frappe.parse_json(payload.decode())
 		if event.get("event") in RAZORPAY_REFUND_EVENTS:
 			return read_refund_event(event, event_id)
+		if event.get("event") == RAZORPAY_ORDER_PAID_EVENT:
+			return read_order_paid_event(event, event_id)
 		if event.get("event") != RAZORPAY_PAID_EVENT:
 			return None
 
@@ -177,6 +190,9 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		return WebhookEvent(session_id=session_id, status=status, event_id=event_id)
 
 	def cancel_session(self, session_id: str) -> bool:
+		# Razorpay cannot cancel an Order; the checkout's timeout closes it instead.
+		if is_order(session_id):
+			return False
 		try:
 			link = self.get_client().cancel_payment_link(session_id)
 		except frappe.ValidationError:
@@ -189,28 +205,35 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		return RefundResult(refund_id=refund.id, status=refund.status)
 
 	def get_transaction_ref(self, session_id: str) -> str | None:
-		payments = self.get_client().get_payment_link(session_id).payments or []
+		payments = self.get_session_payments(session_id)
 		for wanted in (RAZORPAY_CAPTURED_STATUS, RAZORPAY_AUTHORISED_STATUS):
 			for payment in payments:
-				if (payment.status or "").strip().casefold() == wanted:
+				if has_status(payment, wanted):
 					return payment.payment_id
 		return None
 
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
 		currency = currency or self.currency
-		client = self.get_client()
 		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
 			payment_id = session_id
 		else:
-			payment_id = get_captured_payment_id(client.get_payment_link(session_id))
+			payment_id = get_captured_payment_id(self.get_session_payments(session_id))
 
-		refund = client.create_refund(payment_id, to_minor_units(amount, currency))
+		refund = self.get_client().create_refund(payment_id, to_minor_units(amount, currency))
 		if refund.status not in RAZORPAY_ACCEPTED_REFUND_STATUSES:
 			frappe.throw(_("Refund failed with status: {0}").format(refund.status))
 
 		if refund.amount is not None:
 			amount = flt(from_minor_units(refund.amount, currency))
 		return RefundResult(refund_id=refund.id, status=refund.status, amount=amount)
+
+
+def read_order_paid_event(event: dict, event_id: str) -> WebhookEvent:
+	order = ((event.get("payload") or {}).get("order") or {}).get("entity") or {}
+	# This event means paid, so an unreadable entity must 400 and be retried, not 200 and lost.
+	if not order.get("id") or (order.get("status") or "").strip().casefold() != RAZORPAY_ORDER_PAID_STATUS:
+		frappe.throw(_("Unreadable order entity on a {0} event").format(RAZORPAY_ORDER_PAID_EVENT))
+	return WebhookEvent(session_id=order["id"], status="Paid", event_id=event_id)
 
 
 def read_refund_event(event: dict, event_id: str) -> WebhookEvent:
@@ -225,36 +248,14 @@ def read_refund_event(event: dict, event_id: str) -> WebhookEvent:
 	)
 
 
-def get_customer_details(customer: dict) -> dict:
-	"""Razorpay rejects a blank `contact` or `email`, so empty values are dropped."""
-	details = {
-		"name": get_customer_name(customer),
-		"email": validate_email_address(customer.get("email") or "", throw=False),
-		"contact": customer.get("phone"),
-	}
-	return {key: value for key, value in details.items() if value}
-
-
-def get_customer_name(customer: dict) -> str:
-	name = customer.get("name") or {}
-	return " ".join(part for part in (name.get("forenames"), name.get("surname")) if part)
-
-
-def has_authorised_payment(payment_link: RazorpayPaymentLink) -> bool:
-	return any(
-		(payment.status or "").strip().casefold() == RAZORPAY_AUTHORISED_STATUS
-		for payment in payment_link.payments or []
-	)
-
-
-def get_captured_payment_id(payment_link: RazorpayPaymentLink) -> str:
-	for payment in payment_link.payments or []:
-		if (payment.status or "").strip().casefold() == RAZORPAY_CAPTURED_STATUS:
+def get_captured_payment_id(payments: list[RazorpayPayment]) -> str:
+	for payment in payments:
+		if has_status(payment, RAZORPAY_CAPTURED_STATUS):
 			return payment.payment_id
 
 	frappe.throw(
 		_(
-			"Razorpay has no captured payment for this link. An authorised but uncaptured payment has to be"
+			"Razorpay has no captured payment for this checkout. An authorised but uncaptured payment has to be"
 			" refunded from the Razorpay dashboard."
 		)
 	)

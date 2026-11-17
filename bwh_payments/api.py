@@ -38,20 +38,30 @@ get_payment_gateways = get_available_payment_modes
 
 
 def create_payment(
-	ref_doctype: str, ref_docname: str, amount: float, currency: str, gateway: str, **fields
+	ref_doctype: str,
+	ref_docname: str,
+	amount: float,
+	currency: str,
+	gateway: str,
+	inline_sdks: tuple[str, ...] = (),
+	**fields,
 ) -> GatewayPaymentRequest:
 	"""Send the shopper to the returned request's `order_url`. The referenced document's
 	`on_payment_authorized(status)` runs once the payment is Paid.
 
 	With `redirect_to` (a path on this site), the gateway returns the shopper through
 	`checkout.return_from_gateway`, which confirms the payment before redirecting there.
+
+	With `inline_sdks`, the browser SDKs the caller can open, a gateway using one of them opens no
+	link. The caller opens the SDK with `get_inline_checkout(display)`, then posts its response to
+	`checkout.confirm_inline_payment`.
 	"""
 	# The insert skips permissions, so user input must not reach status or the ledger.
 	allowed = ("company", "redirect_to")
 	if blocked := [field for field in fields if field not in allowed and not field.startswith("customer_")]:
 		frappe.throw(_("create_payment cannot set {0}").format(", ".join(sorted(blocked))))
 
-	return frappe.get_doc(
+	payment_request = frappe.get_doc(
 		{
 			"doctype": "Gateway Payment Request",
 			"ref_doctype": ref_doctype,
@@ -61,7 +71,9 @@ def create_payment(
 			"gateway": gateway,
 			**fields,
 		}
-	).insert(ignore_permissions=True)
+	)
+	payment_request.flags.inline_sdks = inline_sdks
+	return payment_request.insert(ignore_permissions=True)
 
 
 def get_gateway_options(currency: str | None = None) -> list[GatewayOption]:

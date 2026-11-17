@@ -14,6 +14,10 @@ from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_paym
 	make_payment_request,
 	remove_stripe_gateway,
 )
+from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
+	RazorpayTestCase,
+)
+from bwh_payments.services.razorpay.stub import StubRazorpayClient, sign_inline_payment
 from bwh_payments.services.stripe.stub import StubStripeClient
 
 
@@ -103,3 +107,60 @@ class TestReturnFromGateway(IntegrationTestCase):
 	def test_an_unknown_payment_cannot_be_returned_to(self):
 		with self.assertRaises(frappe.DoesNotExistError):
 			self.return_as_guest("not-a-payment")
+
+	def test_a_request_on_a_gateway_without_inline_checkout_is_refused(self):
+		payment_request = create_payment("Currency", "SAR", 100, "SAR", GATEWAY)
+		frappe.set_user("Guest")
+
+		with self.assertRaisesRegex(frappe.PermissionError, "could not be verified"):
+			checkout.confirm_inline_payment(payment_request.name, {})
+
+
+class TestConfirmInlinePayment(RazorpayTestCase):
+	def setUp(self):
+		super().setUp()
+		self.addCleanup(frappe.set_user, "Administrator")
+
+	def make_request(self, redirect_to: str = "/orders/1"):
+		payment_request = create_payment(
+			"Currency", "INR", 100, "INR", "Razorpay", inline_sdks=("razorpay",), redirect_to=redirect_to
+		)
+		self.payment_id = StubRazorpayClient.pay_order(payment_request.order_ref)
+		return payment_request
+
+	def sign(self, payment_request, secret: str = "rzp_test_secret") -> dict:
+		return {
+			"razorpay_order_id": payment_request.order_ref,
+			"razorpay_payment_id": self.payment_id,
+			"razorpay_signature": sign_inline_payment(payment_request.order_ref, self.payment_id, secret),
+		}
+
+	def test_a_guest_with_a_signed_response_marks_the_paid_order_paid_and_gets_the_redirect(self):
+		payment_request = self.make_request("/orders/1?token=x")
+		frappe.set_user("Guest")
+
+		redirect_to = checkout.confirm_inline_payment(payment_request.name, self.sign(payment_request))
+
+		frappe.set_user("Administrator")
+		self.assertEqual(redirect_to, "/orders/1?token=x")
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Paid")
+
+	def test_a_bad_signature_is_refused_and_the_payment_stays_pending(self):
+		payment_request = self.make_request()
+		frappe.set_user("Guest")
+
+		with self.assertRaises(frappe.PermissionError):
+			checkout.confirm_inline_payment(
+				payment_request.name, self.sign(payment_request, "attacker_guess")
+			)
+
+		frappe.set_user("Administrator")
+		payment_request.reload()
+		self.assertEqual(payment_request.status, "Pending")
+
+	def test_an_unknown_request_is_refused_like_a_bad_signature(self):
+		frappe.set_user("Guest")
+
+		with self.assertRaisesRegex(frappe.PermissionError, "could not be verified"):
+			checkout.confirm_inline_payment("not-a-payment", {})
