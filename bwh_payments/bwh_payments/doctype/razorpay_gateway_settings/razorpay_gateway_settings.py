@@ -30,15 +30,8 @@ RAZORPAY_LINK_STATUS_MAP = {
 	"cancelled": "Cancelled",
 }
 
-# Razorpay `method` → the method name callers price by. Cards split by `card.type` instead.
-RAZORPAY_PAYMENT_METHOD_MAP = {
-	"upi": "upi",
-	"netbanking": "netbanking",
-	"wallet": "wallet",
-	"emi": "emi",
-	"cardless_emi": "emi",
-	"paylater": "paylater",
-}
+# Razorpay `method` names that callers price by another name. Cards split by `card.type` instead.
+RAZORPAY_PAYMENT_METHOD_MAP = {"cardless_emi": "emi"}
 RAZORPAY_CARD_TYPES = ("credit", "debit")
 
 RAZORPAY_AUTHORISED_STATUS = "authorized"
@@ -212,14 +205,16 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 					return payment.payment_id
 		return None
 
-	def get_payment_method(self, session_id: str) -> str | None:
-		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
-			payment_id = session_id
-		else:
-			payment_id = self.get_transaction_ref(session_id)
+	def get_payment_method(self, session_id: str, transaction_ref: str | None = None) -> str | None:
+		payment_id = transaction_ref or self.find_payment_id(session_id)
 		if not payment_id:
 			return None
 		return read_payment_method(self.get_client().get_payment(payment_id))
+
+	def find_payment_id(self, session_id: str) -> str | None:
+		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
+			return session_id
+		return self.get_transaction_ref(session_id)
 
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
 		currency = currency or self.currency

@@ -131,20 +131,26 @@ class GatewayPaymentRequest(Document):
 		return arguments
 
 	def fetch_transaction_ref(self) -> str | None:
-		try:
-			return self.get_gateway_settings().get_transaction_ref(self.order_ref)
-		except Exception:
-			# Only refunds raised outside this app need it, so a failed lookup must not block the payment.
-			frappe.clear_last_message()
-			frappe.log_error(title=_("Could not read the settled transaction for {0}").format(self.name))
-			return None
+		return self.fetch_from_gateway(
+			lambda settings: settings.get_transaction_ref(self.order_ref),
+			_("Could not read the settled transaction for {0}").format(self.name),
+		)
 
 	def fetch_payment_method(self) -> str | None:
+		return self.fetch_from_gateway(
+			lambda settings: settings.get_payment_method(
+				self.order_ref, transaction_ref=self.gateway_transaction_ref
+			),
+			_("Could not read the payment method for {0}").format(self.name),
+		)
+
+	def fetch_from_gateway(self, read, error_title: str):
+		"""Only refunds and payouts need what is read here, so a failed lookup must not block the payment."""
 		try:
-			return self.get_gateway_settings().get_payment_method(self.order_ref)
+			return read(self.get_gateway_settings())
 		except Exception:
 			frappe.clear_last_message()
-			frappe.log_error(title=_("Could not read the payment method for {0}").format(self.name))
+			frappe.log_error(title=error_title)
 			return None
 
 	def get_customer_details(self) -> dict:

@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RazorpayTestCase,
 	make_razorpay_payment_request,
@@ -86,6 +88,15 @@ class TestRazorpayPaymentMethod(RazorpayTestCase):
 
 		self.assertEqual(self.get_settings().get_payment_method(payment_id), "netbanking")
 
+	def test_a_known_payment_is_read_without_asking_for_its_link_again(self):
+		link_id = StubRazorpayClient.add_link("paid")
+		payment_id = StubRazorpayClient.add_payment(link_id, "captured", recorded_payment("wallet"))
+		del StubRazorpayClient.links[link_id]
+
+		self.assertEqual(
+			self.get_settings().get_payment_method(link_id, transaction_ref=payment_id), "wallet"
+		)
+
 
 class TestPaymentRequestPaymentMethod(RazorpayTestCase):
 	def test_a_paid_request_stores_how_it_was_paid(self):
@@ -94,6 +105,22 @@ class TestPaymentRequestPaymentMethod(RazorpayTestCase):
 
 		payment_request.sync_status()
 
+		self.assertEqual(payment_request.payment_method, "card_credit")
+
+	def test_the_settled_payment_is_looked_up_once(self):
+		payment_request = make_razorpay_payment_request(500)
+		StubRazorpayClient.pay(payment_request.order_ref, CARD_PAYMENT)
+
+		with patch.object(
+			StubRazorpayClient,
+			"get_payment_link",
+			autospec=True,
+			side_effect=StubRazorpayClient.get_payment_link,
+		) as get_payment_link:
+			payment_request.sync_status()
+
+		# Once for the status, once for the settled payment's id.
+		self.assertEqual(get_payment_link.call_count, 2)
 		self.assertEqual(payment_request.payment_method, "card_credit")
 
 	def test_a_failed_method_lookup_does_not_block_the_payment(self):

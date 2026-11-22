@@ -125,8 +125,11 @@ class PaymentGatewayBase(ABC):
 		"""The gateway's id for the settled payment, or None when it cannot say."""
 		return None
 
-	def get_payment_method(self, session_id: str) -> str | None:
-		"""How the settled payment was made, such as `upi` or `card_credit`, or None when it cannot say."""
+	def get_payment_method(self, session_id: str, transaction_ref: str | None = None) -> str | None:
+		"""How the settled payment was made, such as `upi` or `card_credit`, or None when it cannot say.
+
+		`transaction_ref` is the settled payment's id when it is already known.
+		"""
 		return None
 
 	def get_gateway_name(self) -> str:
