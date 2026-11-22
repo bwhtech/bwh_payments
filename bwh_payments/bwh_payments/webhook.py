@@ -143,7 +143,9 @@ def apply_event_as_administrator(payment_request, event: WebhookEvent):
 		if event.refund_id:
 			apply_refund_event(payment_request, event)
 		elif event.sync_status:
+			# A sync event asks the gateway about everything the payment is waiting on.
 			payment_request.sync_status()
+			payment_request.settle_pending_refunds()
 		else:
 			payment_request.apply_webhook_status(event.status, event.event_id, event.transaction_ref)
 

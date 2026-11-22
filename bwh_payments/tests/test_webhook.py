@@ -247,3 +247,22 @@ class TestWebhook(IntegrationTestCase):
 		payment_request.reload()
 		self.assertEqual(refund.status, "Processed")
 		self.assertEqual(flt(payment_request.refund_amount), 30)
+
+	def test_a_sync_event_also_settles_the_pending_refunds(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		StubStripeClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(30)
+		StubStripeClient.set_refund_status(refund.refund_id, "succeeded")
+
+		webhook.process_webhook(
+			webhook.log_webhook(
+				GATEWAY,
+				event=WebhookEvent(session_id=payment_request.order_ref, status="Pending", sync_status=True),
+				reference_docname=payment_request.name,
+			).name
+		)
+
+		refund.reload()
+		self.assertEqual(refund.status, "Processed")

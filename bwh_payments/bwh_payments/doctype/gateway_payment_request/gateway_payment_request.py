@@ -303,6 +303,11 @@ class GatewayPaymentRequest(Document):
 	def update_pending_refunds(self):
 		"""Ask the gateway about every Pending refund, for when a refund webhook never arrived."""
 		settings = self.get_gateway_settings()
+		self.settle_pending_refunds(settings)
+		self.record_unknown_refunds(settings)
+
+	def settle_pending_refunds(self, settings=None):
+		settings = settings or self.get_gateway_settings()
 		for name in frappe.get_all(
 			"Gateway Refund",
 			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "set"]},
@@ -312,8 +317,6 @@ class GatewayPaymentRequest(Document):
 			result = settings.get_refund_status(self.order_ref, refund.refund_id)
 			if result:
 				refund.apply_gateway_status(RefundResult.model_validate(result).status)
-
-		self.record_unknown_refunds(settings)
 
 	def record_unknown_refunds(self, settings):
 		"""Record refunds raised outside this app whose webhook never arrived."""
