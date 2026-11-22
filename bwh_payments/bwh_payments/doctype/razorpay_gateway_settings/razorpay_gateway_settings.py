@@ -65,6 +65,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 	description = "Cards, UPI, netbanking and wallets. India."
 	docs_url = "https://dashboard.razorpay.com/app/website-app-settings/webhooks"
 	supports_embedded_checkout = True
+	idempotent_refunds = True
 
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -304,14 +305,22 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 			return session_id
 		return self.get_transaction_ref(session_id)
 
-	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
+	def refund_payment(
+		self,
+		session_id: str,
+		amount: float,
+		currency: str | None = None,
+		idempotency_key: str | None = None,
+	) -> RefundResult:
 		currency = currency or self.currency
 		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
 			payment_id = session_id
 		else:
 			payment_id = get_captured_payment_id(self.get_session_payments(session_id))
 
-		refund = self.get_client().create_refund(payment_id, to_minor_units(amount, currency))
+		refund = self.get_client().create_refund(
+			payment_id, to_minor_units(amount, currency), idempotency_key=idempotency_key
+		)
 		if refund.status not in RAZORPAY_ACCEPTED_REFUND_STATUSES:
 			frappe.throw(_("Refund failed with status: {0}").format(refund.status))
 

@@ -3,7 +3,9 @@ from typing import NoReturn
 import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
+from requests import RequestException
 
+from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
 	RazorpayOrder,
@@ -16,6 +18,10 @@ from bwh_payments.services.razorpay.base import (
 RAZORPAY_BASE_URL = "https://api.razorpay.com/v1"
 RAZORPAY_HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
 SETTINGS_DOCTYPE = "Razorpay Gateway Settings"
+TIMEOUT_SECONDS = 30
+REFUND_IDEMPOTENCY_HEADER = "X-Refund-Idempotency"
+# 409: a request with the same idempotency key is still in progress.
+TRANSIENT_STATUS_CODES = (409, 429)
 
 
 class LiveRazorpayClient(BaseRazorpayClient):
@@ -44,16 +50,27 @@ class LiveRazorpayClient(BaseRazorpayClient):
 	def get_payment(self, payment_id: str) -> RazorpayPaymentDetails:
 		return RazorpayPaymentDetails.model_validate(self.get(f"/payments/{payment_id}"))
 
-	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
-		return RazorpayRefund.model_validate(self.post(f"/payments/{payment_id}/refund", {"amount": amount}))
+	def create_refund(
+		self, payment_id: str, amount: int, idempotency_key: str | None = None
+	) -> RazorpayRefund:
+		headers = {REFUND_IDEMPOTENCY_HEADER: idempotency_key} if idempotency_key else {}
+		return RazorpayRefund.model_validate(
+			self.post(f"/payments/{payment_id}/refund", {"amount": amount}, headers)
+		)
 
 	def get_refund(self, refund_id: str) -> RazorpayRefund:
 		return RazorpayRefund.model_validate(self.get(f"/refunds/{refund_id}"))
 
-	def post(self, endpoint: str, payload: dict) -> dict:
+	def post(self, endpoint: str, payload: dict, headers: dict | None = None) -> dict:
 		url = f"{RAZORPAY_BASE_URL}{endpoint}"
 		try:
-			response = make_post_request(url, auth=self.auth, json=payload, headers=RAZORPAY_HEADERS)
+			response = make_post_request(
+				url,
+				auth=self.auth,
+				json=payload,
+				headers={**RAZORPAY_HEADERS, **(headers or {})},
+				timeout=TIMEOUT_SECONDS,
+			)
 		except Exception as exception:
 			throw_request_error(url, exception)
 		return read_response(url, response)
@@ -61,7 +78,9 @@ class LiveRazorpayClient(BaseRazorpayClient):
 	def get(self, endpoint: str) -> dict:
 		url = f"{RAZORPAY_BASE_URL}{endpoint}"
 		try:
-			response = make_get_request(url, auth=self.auth, headers=RAZORPAY_HEADERS)
+			response = make_get_request(
+				url, auth=self.auth, headers=RAZORPAY_HEADERS, timeout=TIMEOUT_SECONDS
+			)
 		except Exception as exception:
 			throw_request_error(url, exception)
 		return read_response(url, response)
@@ -70,7 +89,18 @@ class LiveRazorpayClient(BaseRazorpayClient):
 def throw_request_error(url: str, exception: Exception) -> NoReturn:
 	description = read_razorpay_error(exception)
 	log_request(url, error=description or exception)
-	frappe.throw(_("Razorpay rejected the request: {0}").format(description or _("unknown error")))
+	frappe.throw(
+		_("Razorpay rejected the request: {0}").format(description or _("unknown error")),
+		exc=GatewayUnavailableError if is_transient_error(exception) else frappe.ValidationError,
+	)
+
+
+def is_transient_error(exception: Exception) -> bool:
+	"""No answer, a server error, a rate limit, or the same refund still in progress: a retry may work."""
+	response = getattr(exception, "response", None)
+	if response is None:
+		return isinstance(exception, RequestException)
+	return response.status_code >= 500 or response.status_code in TRANSIENT_STATUS_CODES
 
 
 def read_response(url: str, response) -> dict:

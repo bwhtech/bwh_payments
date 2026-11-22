@@ -6,6 +6,7 @@ from typing import ClassVar
 import frappe
 from frappe import _
 
+from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
 	RazorpayOrder,
@@ -28,7 +29,10 @@ class StubRazorpayClient(BaseRazorpayClient):
 	created_orders: ClassVar[list[dict]] = []
 	created_refunds: ClassVar[list[dict]] = []
 	refunds: ClassVar[dict[str, RazorpayRefund]] = {}
+	refund_keys: ClassVar[dict[str, str]] = {}
 	next_refund_status: ClassVar[str] = "processed"
+	# Razorpay makes the next refund, but its answer never arrives.
+	lose_next_refund_answer: ClassVar[bool] = False
 
 	@classmethod
 	def reset(cls):
@@ -40,7 +44,9 @@ class StubRazorpayClient(BaseRazorpayClient):
 		cls.created_orders = []
 		cls.created_refunds = []
 		cls.refunds = {}
+		cls.refund_keys = {}
 		cls.next_refund_status = "processed"
+		cls.lose_next_refund_answer = False
 
 	@classmethod
 	def set_refund_status(cls, refund_id: str, status: str):
@@ -122,12 +128,23 @@ class StubRazorpayClient(BaseRazorpayClient):
 			frappe.throw(_("Razorpay rejected the request: {0}").format("payment not found"))
 		return RazorpayPaymentDetails.model_validate(self.payments[payment_id])
 
-	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
+	def create_refund(
+		self, payment_id: str, amount: int, idempotency_key: str | None = None
+	) -> RazorpayRefund:
+		"""A key Razorpay has seen returns the refund it made then."""
+		if idempotency_key in self.refund_keys:
+			return self.get_refund(self.refund_keys[idempotency_key])
+
 		self.created_refunds.append({"payment_id": payment_id, "amount": amount})
 		refund = RazorpayRefund(
 			id=f"rfnd_{frappe.generate_hash(length=12)}", status=self.next_refund_status, amount=amount
 		)
 		self.refunds[refund.id] = refund
+		if idempotency_key:
+			self.refund_keys[idempotency_key] = refund.id
+		if self.lose_next_refund_answer:
+			type(self).lose_next_refund_answer = False
+			frappe.throw(_("Razorpay could not be reached"), exc=GatewayUnavailableError)
 		return refund.model_copy()
 
 	def get_refund(self, refund_id: str) -> RazorpayRefund:

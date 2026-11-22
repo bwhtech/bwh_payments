@@ -43,7 +43,10 @@ class RazorpayRefund(GatewayModel):
 
 
 class BaseRazorpayClient(ABC):
-	"""Razorpay's Payment Links, Orders and Refunds APIs. A rejected call raises `frappe.ValidationError`."""
+	"""Razorpay's Payment Links, Orders and Refunds APIs.
+
+	A rejected call raises `frappe.ValidationError`, and one Razorpay did not answer `GatewayUnavailableError`.
+	"""
 
 	@abstractmethod
 	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink: ...
@@ -67,8 +70,10 @@ class BaseRazorpayClient(ABC):
 	def get_payment(self, payment_id: str) -> RazorpayPaymentDetails: ...
 
 	@abstractmethod
-	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
-		"""Refund `amount` minor units of a captured payment."""
+	def create_refund(
+		self, payment_id: str, amount: int, idempotency_key: str | None = None
+	) -> RazorpayRefund:
+		"""Refund `amount` minor units of a captured payment. Resent with its key, Razorpay refunds once."""
 
 	@abstractmethod
 	def get_refund(self, refund_id: str) -> RazorpayRefund: ...

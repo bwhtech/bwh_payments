@@ -181,6 +181,11 @@ def set_next_refund_status(status: str):
 	StubRazorpayClient.next_refund_status = REFUND_STATUSES[status]
 
 
+def lose_next_refund_answer():
+	"""The gateway makes the next refund, but its answer is lost on the way back."""
+	StubRazorpayClient.lose_next_refund_answer = True
+
+
 def set_refund_status(refund: str, status: str):
 	"""The gateway now reports this refund as "Processed" or "Failed", for `api.sync_refunds` to read."""
 	StubRazorpayClient.set_refund_status(
