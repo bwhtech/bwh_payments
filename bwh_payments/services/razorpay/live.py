@@ -6,6 +6,7 @@ from frappe.integrations.utils import create_request_log, make_get_request, make
 
 from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
+	RazorpayPaymentDetails,
 	RazorpayPaymentLink,
 	RazorpayRefund,
 )
@@ -27,6 +28,9 @@ class LiveRazorpayClient(BaseRazorpayClient):
 
 	def cancel_payment_link(self, link_id: str) -> RazorpayPaymentLink:
 		return RazorpayPaymentLink.model_validate(self.post(f"/payment_links/{link_id}/cancel", {}))
+
+	def get_payment(self, payment_id: str) -> RazorpayPaymentDetails:
+		return RazorpayPaymentDetails.model_validate(self.get(f"/payments/{payment_id}"))
 
 	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
 		return RazorpayRefund.model_validate(self.post(f"/payments/{payment_id}/refund", {"amount": amount}))

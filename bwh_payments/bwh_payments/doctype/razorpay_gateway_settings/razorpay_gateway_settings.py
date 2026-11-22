@@ -13,7 +13,11 @@ from frappe.utils.data import flt
 from bwh_payments.base_class import CheckoutSession, PaymentGatewayBase, RefundResult, WebhookEvent
 from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
 from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
-from bwh_payments.services.razorpay.base import BaseRazorpayClient, RazorpayPaymentLink
+from bwh_payments.services.razorpay.base import (
+	BaseRazorpayClient,
+	RazorpayPaymentDetails,
+	RazorpayPaymentLink,
+)
 from bwh_payments.services.razorpay.live import LiveRazorpayClient
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
 
@@ -25,6 +29,17 @@ RAZORPAY_LINK_STATUS_MAP = {
 	"expired": "Expired",
 	"cancelled": "Cancelled",
 }
+
+# Razorpay `method` → the method name callers price by. Cards split by `card.type` instead.
+RAZORPAY_PAYMENT_METHOD_MAP = {
+	"upi": "upi",
+	"netbanking": "netbanking",
+	"wallet": "wallet",
+	"emi": "emi",
+	"cardless_emi": "emi",
+	"paylater": "paylater",
+}
+RAZORPAY_CARD_TYPES = ("credit", "debit")
 
 RAZORPAY_AUTHORISED_STATUS = "authorized"
 RAZORPAY_CANCELLED_STATUS = "cancelled"
@@ -196,6 +211,15 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 					return payment.payment_id
 		return None
 
+	def get_payment_method(self, session_id: str) -> str | None:
+		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
+			payment_id = session_id
+		else:
+			payment_id = self.get_transaction_ref(session_id)
+		if not payment_id:
+			return None
+		return read_payment_method(self.get_client().get_payment(payment_id))
+
 	def refund_payment(self, session_id: str, amount: float, currency: str | None = None) -> RefundResult:
 		currency = currency or self.currency
 		client = self.get_client()
@@ -223,6 +247,15 @@ def read_refund_event(event: dict, event_id: str) -> WebhookEvent:
 		transaction_ref=refund.get("payment_id"),
 		event_id=event_id,
 	)
+
+
+def read_payment_method(payment: RazorpayPaymentDetails) -> str | None:
+	method = (payment.method or "").strip().casefold()
+	if method != "card":
+		return RAZORPAY_PAYMENT_METHOD_MAP.get(method, method or None)
+
+	card_type = ((payment.card and payment.card.type) or "").strip().casefold()
+	return f"card_{card_type}" if card_type in RAZORPAY_CARD_TYPES else "card"
 
 
 def get_customer_details(customer: dict) -> dict:

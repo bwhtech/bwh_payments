@@ -9,6 +9,7 @@ from frappe import _
 from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
 	RazorpayPayment,
+	RazorpayPaymentDetails,
 	RazorpayPaymentLink,
 	RazorpayRefund,
 )
@@ -18,6 +19,8 @@ class StubRazorpayClient(BaseRazorpayClient):
 	"""In-memory Razorpay for tests. Call reset() in setUp."""
 
 	links: ClassVar[dict[str, RazorpayPaymentLink]] = {}
+	# GET /payments/{id} responses, by payment id.
+	payments: ClassVar[dict[str, dict]] = {}
 	created_links: ClassVar[list[dict]] = []
 	created_refunds: ClassVar[list[dict]] = []
 	refunds: ClassVar[dict[str, RazorpayRefund]] = {}
@@ -26,6 +29,7 @@ class StubRazorpayClient(BaseRazorpayClient):
 	@classmethod
 	def reset(cls):
 		cls.links = {}
+		cls.payments = {}
 		cls.created_links = []
 		cls.created_refunds = []
 		cls.refunds = {}
@@ -49,16 +53,18 @@ class StubRazorpayClient(BaseRazorpayClient):
 		cls.links[link_id].status = status
 
 	@classmethod
-	def add_payment(cls, link_id: str, status: str) -> str:
+	def add_payment(cls, link_id: str, status: str, response: dict | None = None) -> str:
+		"""`response` is what GET /payments/{id} answers, for example one recorded from Razorpay."""
 		payment_id = f"pay_{frappe.generate_hash(length=12)}"
 		cls.links[link_id].payments.append(RazorpayPayment(payment_id=payment_id, status=status))
+		cls.payments[payment_id] = {"method": "upi", **(response or {}), "id": payment_id, "status": status}
 		return payment_id
 
 	@classmethod
-	def pay(cls, link_id: str) -> str:
+	def pay(cls, link_id: str, response: dict | None = None) -> str:
 		"""Capture a payment and close the link."""
 		cls.set_status(link_id, "paid")
-		return cls.add_payment(link_id, "captured")
+		return cls.add_payment(link_id, "captured", response)
 
 	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink:
 		self.created_links.append(payload)
@@ -79,6 +85,11 @@ class StubRazorpayClient(BaseRazorpayClient):
 			)
 		self.set_status(link_id, "cancelled")
 		return self.get_payment_link(link_id)
+
+	def get_payment(self, payment_id: str) -> RazorpayPaymentDetails:
+		if payment_id not in self.payments:
+			frappe.throw(_("Razorpay rejected the request: {0}").format("payment not found"))
+		return RazorpayPaymentDetails.model_validate(self.payments[payment_id])
 
 	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
 		self.created_refunds.append({"payment_id": payment_id, "amount": amount})

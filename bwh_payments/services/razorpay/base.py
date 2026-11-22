@@ -15,6 +15,18 @@ class RazorpayPaymentLink(GatewayModel):
 	payments: list[RazorpayPayment] | None = None
 
 
+class RazorpayCard(GatewayModel):
+	type: str | None = None
+
+
+class RazorpayPaymentDetails(GatewayModel):
+	"""A payment as GET /payments/{id} returns it."""
+
+	id: str
+	method: str | None = None
+	card: RazorpayCard | None = None
+
+
 class RazorpayRefund(GatewayModel):
 	id: str | None = None
 	status: str | None = None
@@ -33,6 +45,9 @@ class BaseRazorpayClient(ABC):
 
 	@abstractmethod
 	def cancel_payment_link(self, link_id: str) -> RazorpayPaymentLink: ...
+
+	@abstractmethod
+	def get_payment(self, payment_id: str) -> RazorpayPaymentDetails: ...
 
 	@abstractmethod
 	def create_refund(self, payment_id: str, amount: int) -> RazorpayRefund:
