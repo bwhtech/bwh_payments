@@ -41,10 +41,11 @@ PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport
 `bwh_payments/base_class.py` defines `PaymentGatewayBase` (ABC): `create_session`, `get_payment_status`,
 `refund_payment`, `handle_webhook`. Optional methods have defaults, so a third-party gateway that skips them
 keeps working: `cancel_session` (False), `get_transaction_ref` (the settled payment's id; None),
+`get_payment_method` (how it was paid, such as `upi` or `card_credit`; None),
 `get_refund_status` (None = cannot report), `list_refunds` (None = cannot list; `sync_refunds` records
 the unknown ones), `supported_currencies` (None = any), and the `logo` /
 `logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
-the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
+the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url` and `description`, each passed only when set.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
 carries `session_id` and, when only the webhook names the settled payment, `transaction_ref`; a refund
 event `refund_id`, `refund_amount` and `transaction_ref`; a payment event with `sync_status` makes the
@@ -92,7 +93,7 @@ To add a service, copy `services/razorpay/` and wire `get_client()` the same way
 as it stands.
 
 - `create_payment(ref_doctype, ref_docname, amount, currency, gateway, **fields)`: `fields` limited to
-  `company`, `redirect_to` (a path on this site) and `customer_*`.
+  `company`, `redirect_to` (a path on this site), `description` (checkout text) and `customer_*`.
 - `get_payment_gateways` (names), `get_gateway_options(currency=None)` (`GatewayOption`: name, title,
   logos), `validate_currency(gateway, currency)`, `resolve_payment_mode`.
 - `get_gateways()` (`GatewayInfo`): every installed gateway, enabled or not, with its settings DocType,
@@ -109,7 +110,7 @@ Refund status change calls `run_method("on_refund_update", refund)`; `refund.ref
 An insert that is already settled is an import and fires neither.
 
 `bwh_payments/testing.py` lets consumer apps test against the in-memory gateway without naming a provider:
-`configure_test_gateway`, `pay`, `set_next_refund_status`, `set_refund_status`, `send_refund_webhook`,
+`configure_test_gateway`, `pay` (with an optional `payment_method`), `set_next_refund_status`, `set_refund_status`, `send_refund_webhook`,
 `send_external_refund_webhook`, `without_commits`. `bwh_payments/migrate/frappe_payments.py`
 `import_gateways()` turns frappe/payments gateways into profiles with the same names.
 
@@ -122,7 +123,8 @@ An insert that is already settled is an import and fires neither.
    session id, unique), `order_url` (checkout URL for the shopper) and the return URLs. With `redirect_to`,
    every return URL is `checkout.return_from_gateway?request=<name>`.
 3. Status moves from `Pending` by one of three paths, all under a row lock (`lock_row`). On the move to
-   `Paid`, `gateway_transaction_ref` is read through `get_transaction_ref` (a failure never blocks it).
+   `Paid`, `gateway_transaction_ref` and `payment_method` are read through `get_transaction_ref` and
+   `get_payment_method` (a failure never blocks it).
    - **Webhook**: `webhook.handle` (guest POST, `?gateway=<profile>`, rate-limited) verifies the delivery,
      logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
      queues `process_webhook`. The job applies it as Administrator (a `sync_status` event runs
