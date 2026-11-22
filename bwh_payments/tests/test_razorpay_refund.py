@@ -163,6 +163,20 @@ class TestRazorpayLostRefundAnswer(RazorpayTestCase):
 
 		self.assert_reserved(payment_request, 200)
 
+	def test_a_successful_refund_answer_without_a_known_status_stays_reserved(self):
+		for body in ({"id": "rfnd_NoStatus01", "amount": 20000}, {**PROCESSED_REFUND, "status": "on_hold"}):
+			with self.subTest(body=body):
+				payment_request = self.paid_request(1000)
+
+				self.refund_through_live_razorpay(
+					payment_request,
+					200,
+					target="requests.Session.request",
+					return_value=razorpay_response(200, body),
+				)
+
+				self.assert_reserved(payment_request, 200)
+
 	def test_a_refund_razorpay_refuses_fails(self):
 		payment_request = self.paid_request(1000)
 

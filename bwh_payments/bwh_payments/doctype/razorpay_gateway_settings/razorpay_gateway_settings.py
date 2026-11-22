@@ -24,6 +24,7 @@ from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
 	RazorpayPayment,
 	RazorpayPaymentDetails,
+	RazorpayRefund,
 )
 from bwh_payments.services.razorpay.live import LiveRazorpayClient
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
@@ -56,6 +57,7 @@ RAZORPAY_PAYMENT_ID_PREFIX = "pay_"
 RAZORPAY_ORDER_ID_PREFIX = "order_"
 RAZORPAY_CHECKOUT_SCRIPT = "https://checkout.razorpay.com/v1/checkout.js"
 RAZORPAY_ACCEPTED_REFUND_STATUSES = ("processed", "pending")
+RAZORPAY_FAILED_REFUND_STATUS = "failed"
 
 # Title case: `dict(frappe.request.headers)` drops werkzeug's case-insensitivity.
 RAZORPAY_SIGNATURE_HEADER = "X-Razorpay-Signature"
@@ -281,7 +283,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 
 	def get_refund_status(self, session_id: str, refund_id: str) -> RefundResult:
 		refund = self.get_client().get_refund(refund_id)
-		return RefundResult(refund_id=refund.id, status=refund.status)
+		return RefundResult(refund_id=refund.id, status=read_refund_status(refund))
 
 	def get_transaction_ref(self, session_id: str) -> str | None:
 		payments = self.get_session_payments(session_id)
@@ -326,12 +328,21 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		refund = self.get_client().create_refund(
 			payment_id, to_minor_units(amount, currency), idempotency_key=idempotency_key
 		)
-		if refund.status not in RAZORPAY_ACCEPTED_REFUND_STATUSES:
+		status = read_refund_status(refund)
+		if status == RAZORPAY_FAILED_REFUND_STATUS:
 			frappe.throw(_("Refund failed with status: {0}").format(refund.status), GatewayRefusedError)
 
 		if refund.amount is not None:
 			amount = flt(from_minor_units(refund.amount, currency))
-		return RefundResult(refund_id=refund.id, status=refund.status, amount=amount)
+		return RefundResult(refund_id=refund.id, status=status, amount=amount)
+
+
+def read_refund_status(refund: RazorpayRefund) -> str:
+	"""Only an explicit `failed` is a refusal. A missing or unknown status keeps the refund Pending."""
+	status = (refund.status or "").strip().casefold()
+	if status in RAZORPAY_ACCEPTED_REFUND_STATUSES or status == RAZORPAY_FAILED_REFUND_STATUS:
+		return status
+	return "pending"
 
 
 def read_refund_event(event: dict, event_id: str) -> WebhookEvent:

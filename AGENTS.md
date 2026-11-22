@@ -198,7 +198,8 @@ the payload the script would hand the page.
   `refund.failed`. A session id starting `pay_` is a payment imported from before Payment Links and is
   refunded directly. Refunds are `idempotent_refunds`: the key goes in the `X-Refund-Idempotency` header.
   A timeout, a dropped connection, a 5xx, a 429 or a 409 (the same key still in progress) is a
-  `GatewayUnavailableError`; another 4xx is a `GatewayRefusedError`. A refund goes to the stored payment id,
+  `GatewayUnavailableError`; another 4xx is a `GatewayRefusedError`. A 2xx refund with status `failed` is a
+  refusal; a missing or unknown status reads as `pending`. A refund goes to the stored payment id,
   since a payment refunded in full reads `refunded`, not `captured`.
 - **Telr**: no signed webhook. `handle_webhook` returns `None` on purpose; status comes only from
   `get_payment_status`.
