@@ -147,6 +147,9 @@ def snapshot_isolation(enabled: bool):
 	MariaDB 11.8 has it ON by default. Then a locking read of a row another worker changed after this
 	transaction's first read fails the transaction (`QueryDeadlockError`, 1020) and rolls it back, instead
 	of reading the newest row. Other connections include `other_connection` and a thread's `frappe.connect`.
+
+	This session is also set to Frappe's REPEATABLE READ, from its next transaction: the race tests need a
+	snapshot, and code under test may leave the session at READ COMMITTED.
 	"""
 	value = "ON" if enabled else "OFF"
 	original_connect = Database.connect
@@ -155,13 +158,14 @@ def snapshot_isolation(enabled: bool):
 		original_connect(database)
 		database.sql("set session innodb_snapshot_isolation = %s", (value,))
 
-	previous = frappe.db.sql("select @@session.innodb_snapshot_isolation")[0][0]
+	previous = frappe.db.sql("select @@session.innodb_snapshot_isolation, @@session.tx_isolation")[0]
 	frappe.db.sql("set session innodb_snapshot_isolation = %s", (value,))
+	frappe.db.sql("set session tx_isolation = 'REPEATABLE-READ'")
 	try:
 		with patch.object(Database, "connect", connect):
 			yield
 	finally:
-		frappe.db.sql("set session innodb_snapshot_isolation = %s", (previous,))
+		frappe.db.sql("set session innodb_snapshot_isolation = %s, tx_isolation = %s", previous)
 
 
 def reserve_refund_elsewhere(payment_request: str, amount: float, reference: str | None = None) -> str:
