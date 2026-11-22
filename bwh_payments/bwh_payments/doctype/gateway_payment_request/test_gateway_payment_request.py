@@ -101,7 +101,7 @@ def make_payment_request(amount: float, currency: str = "SAR"):
 	).insert(ignore_permissions=True)
 
 
-class TestGatewayPaymentRequest(IntegrationTestCase):
+class StripeGatewayTestCase(IntegrationTestCase):
 	def setUp(self):
 		StubStripeClient.reset()
 		configure_stripe_gateway()
@@ -114,14 +114,37 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		remove_stripe_gateway()
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
-	def use_currency_number_format(self):
-		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 1)
-		frappe.clear_cache()
-
 	def mark_paid(self, payment_request):
 		StubStripeClient.pay(payment_request.order_ref)
 		payment_request.db_set("status", "Paid", update_modified=False)
 		payment_request.reload()
+
+	def refund_through_an_idempotent_gateway(self, payment_request, amount: float, *answers):
+		"""Refund on a gateway that takes `idempotency_key`; each answer is a result, an error or a function."""
+		settings_class = type(payment_request.get_gateway_settings())
+		pending_answers = iter(answers)
+
+		def answer(*args, **kwargs):
+			next_answer = next(pending_answers)
+			if isinstance(next_answer, Exception):
+				raise next_answer
+			return next_answer(*args, **kwargs) if callable(next_answer) else next_answer
+
+		with (
+			patch.object(settings_class, "idempotent_refunds", True, create=True),
+			patch.object(settings_class, "refund_payment", side_effect=answer) as refund_payment,
+		):
+			# The first answer is read by the refund, and what it raises by the assertions after.
+			with suppress(Exception):
+				payment_request.refund(amount)
+			payment_request.update_pending_refunds()
+		return refund_payment
+
+
+class TestGatewayPaymentRequest(StripeGatewayTestCase):
+	def use_currency_number_format(self):
+		frappe.db.set_single_value("System Settings", "use_number_format_from_currency", 1)
+		frappe.clear_cache()
 
 	def test_create_session_charges_iso_minor_units_for_a_three_decimal_currency(self):
 		self.use_currency_number_format()
@@ -306,27 +329,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(payment_request.refund_id, "12345")
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)
 
-	def refund_through_an_idempotent_gateway(self, payment_request, amount: float, *answers):
-		"""Refund on a gateway that takes `idempotency_key`; each answer is a result, an error or a function."""
-		settings_class = type(payment_request.get_gateway_settings())
-		pending_answers = iter(answers)
-
-		def answer(*args, **kwargs):
-			next_answer = next(pending_answers)
-			if isinstance(next_answer, Exception):
-				raise next_answer
-			return next_answer(*args, **kwargs) if callable(next_answer) else next_answer
-
-		with (
-			patch.object(settings_class, "idempotent_refunds", True, create=True),
-			patch.object(settings_class, "refund_payment", side_effect=answer) as refund_payment,
-		):
-			# The first answer is read by the refund, and what it raises by the assertions after.
-			with suppress(Exception):
-				payment_request.refund(amount)
-			payment_request.update_pending_refunds()
-		return refund_payment
-
 	def test_an_idempotent_gateway_is_sent_the_refund_name_as_its_key_and_the_payment_id(self):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
@@ -402,89 +404,6 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(refund_payment.call_count, 2)
 		self.assertEqual((refund.status, refund.error), ("Failed", "too large"))
 		self.assertEqual(payment_request.get_remaining_refundable_amount(), 100)
-
-	def take_snapshot(self, payment_request):
-		"""Commit, which frees the locks earlier tests hold, then read to take a new snapshot.
-
-		Committed rows, and refunds reserved elsewhere, go with `remove_stripe_gateway`.
-		"""
-		frappe.db.commit()  # nosemgrep: frappe-manual-commit
-		payment_request.reload()
-
-	def test_a_refund_reserved_by_another_worker_after_this_snapshot_counts_against_the_balance(self):
-		payment_request = make_payment_request(100, "SAR")
-		self.mark_paid(payment_request)
-		self.take_snapshot(payment_request)
-		reserve_refund_elsewhere(payment_request.name, 70)
-
-		with self.assertRaisesRegex(frappe.ValidationError, "exceeds the remaining refundable amount"):
-			payment_request.create_refund(70)
-		self.assertEqual(StubStripeClient.created_refunds, [])
-
-	def test_a_refund_another_worker_settled_after_this_snapshot_counts_against_the_balance(self):
-		payment_request = make_payment_request(100, "SAR")
-		self.mark_paid(payment_request)
-		self.take_snapshot(payment_request)
-		commit_elsewhere(
-			"update `tabGateway Payment Request` set refund_amount = 70, status = 'Partially Refunded'"
-			" where name = %s",
-			(payment_request.name,),
-		)
-
-		with self.assertRaisesRegex(frappe.ValidationError, "exceeds the remaining refundable amount"):
-			payment_request.create_refund(70)
-
-	def test_a_refund_another_worker_settled_while_its_answer_was_on_the_way_is_kept(self):
-		payment_request = make_payment_request(100, "SAR")
-		self.mark_paid(payment_request)
-		self.take_snapshot(payment_request)
-		refund_id = frappe.generate_hash()
-
-		def settle_elsewhere_then_answer(*args, **kwargs):
-			commit_elsewhere(
-				"update `tabGateway Refund` set status = 'Processed', refund_id = %s, modified = now(6)"
-				" where payment_request = %s",
-				(refund_id, payment_request.name),
-			)
-			commit_elsewhere(
-				"update `tabGateway Payment Request` set refund_amount = 40, status = 'Partially Refunded',"
-				" modified = now(6) where name = %s",
-				(payment_request.name,),
-			)
-			return {"refund_id": refund_id, "status": "processed"}
-
-		settings_class = type(payment_request.get_gateway_settings())
-		with patch.object(settings_class, "refund_payment", side_effect=settle_elsewhere_then_answer):
-			refund = payment_request.create_refund(40)
-
-		self.assertEqual((refund.status, refund.refund_id), ("Processed", refund_id))
-		payment_request.lock_row()
-		self.assertEqual(flt(payment_request.refund_amount), 40.0)
-
-	def test_a_resend_refused_after_another_worker_settled_the_refund_keeps_that_outcome(self):
-		payment_request = make_payment_request(100, "SAR")
-		self.mark_paid(payment_request)
-		refund_id = frappe.generate_hash()
-
-		def settle_elsewhere_then_refuse(*args, **kwargs):
-			commit_elsewhere(
-				"update `tabGateway Refund` set status = 'Processed', refund_id = %s, modified = now(6)"
-				" where payment_request = %s",
-				(refund_id, payment_request.name),
-			)
-			raise GatewayRefusedError("already refunded")
-
-		self.refund_through_an_idempotent_gateway(
-			payment_request, 40, GatewayUnavailableError("timed out"), settle_elsewhere_then_refuse
-		)
-
-		refund = frappe.db.get_value(
-			"Gateway Refund",
-			{"payment_request": payment_request.name},
-			["status", "refund_id"],
-			for_update=True,
-		)
-		self.assertEqual(refund, ("Processed", refund_id))
 
 	def test_an_unanswered_refund_on_a_gateway_without_keys_fails(self):
 		payment_request = make_payment_request(100, "SAR")
