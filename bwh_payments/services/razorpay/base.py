@@ -15,6 +15,14 @@ class RazorpayPaymentLink(GatewayModel):
 	payments: list[RazorpayPayment] | None = None
 
 
+class RazorpayOrder(GatewayModel):
+	id: str
+	status: str | None = None
+	# Minor units.
+	amount: int | None = None
+	currency: str | None = None
+
+
 class RazorpayCard(GatewayModel):
 	type: str | None = None
 
@@ -35,7 +43,7 @@ class RazorpayRefund(GatewayModel):
 
 
 class BaseRazorpayClient(ABC):
-	"""Razorpay's Payment Links and Refunds APIs. A rejected call raises `frappe.ValidationError`."""
+	"""Razorpay's Payment Links, Orders and Refunds APIs. A rejected call raises `frappe.ValidationError`."""
 
 	@abstractmethod
 	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink: ...
@@ -45,6 +53,15 @@ class BaseRazorpayClient(ABC):
 
 	@abstractmethod
 	def cancel_payment_link(self, link_id: str) -> RazorpayPaymentLink: ...
+
+	@abstractmethod
+	def create_order(self, payload: dict) -> RazorpayOrder: ...
+
+	@abstractmethod
+	def get_order(self, order_id: str) -> RazorpayOrder: ...
+
+	@abstractmethod
+	def get_order_payments(self, order_id: str) -> list[RazorpayPayment]: ...
 
 	@abstractmethod
 	def get_payment(self, payment_id: str) -> RazorpayPaymentDetails: ...

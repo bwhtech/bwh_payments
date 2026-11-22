@@ -8,6 +8,7 @@ from frappe import _
 
 from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
+	RazorpayOrder,
 	RazorpayPayment,
 	RazorpayPaymentDetails,
 	RazorpayPaymentLink,
@@ -19,9 +20,12 @@ class StubRazorpayClient(BaseRazorpayClient):
 	"""In-memory Razorpay for tests. Call reset() in setUp."""
 
 	links: ClassVar[dict[str, RazorpayPaymentLink]] = {}
+	orders: ClassVar[dict[str, RazorpayOrder]] = {}
+	order_payments: ClassVar[dict[str, list[RazorpayPayment]]] = {}
 	# GET /payments/{id} responses, by payment id.
 	payments: ClassVar[dict[str, dict]] = {}
 	created_links: ClassVar[list[dict]] = []
+	created_orders: ClassVar[list[dict]] = []
 	created_refunds: ClassVar[list[dict]] = []
 	refunds: ClassVar[dict[str, RazorpayRefund]] = {}
 	next_refund_status: ClassVar[str] = "processed"
@@ -29,8 +33,11 @@ class StubRazorpayClient(BaseRazorpayClient):
 	@classmethod
 	def reset(cls):
 		cls.links = {}
+		cls.orders = {}
+		cls.order_payments = {}
 		cls.payments = {}
 		cls.created_links = []
+		cls.created_orders = []
 		cls.created_refunds = []
 		cls.refunds = {}
 		cls.next_refund_status = "processed"
@@ -49,22 +56,33 @@ class StubRazorpayClient(BaseRazorpayClient):
 		return link_id
 
 	@classmethod
-	def set_status(cls, link_id: str, status: str):
-		cls.links[link_id].status = status
+	def add_order(cls, amount: int, currency: str) -> str:
+		order_id = f"order_{frappe.generate_hash(length=12)}"
+		cls.orders[order_id] = RazorpayOrder(id=order_id, status="created", amount=amount, currency=currency)
+		cls.order_payments[order_id] = []
+		return order_id
 
 	@classmethod
-	def add_payment(cls, link_id: str, status: str, response: dict | None = None) -> str:
+	def set_status(cls, session_id: str, status: str):
+		"""`session_id` is a payment link or an order."""
+		(cls.orders.get(session_id) or cls.links[session_id]).status = status
+
+	@classmethod
+	def add_payment(cls, session_id: str, status: str, response: dict | None = None) -> str:
 		"""`response` is what GET /payments/{id} answers, for example one recorded from Razorpay."""
 		payment_id = f"pay_{frappe.generate_hash(length=12)}"
-		cls.links[link_id].payments.append(RazorpayPayment(payment_id=payment_id, status=status))
+		payments = cls.order_payments.get(session_id)
+		if payments is None:
+			payments = cls.links[session_id].payments
+		payments.append(RazorpayPayment(payment_id=payment_id, status=status))
 		cls.payments[payment_id] = {"method": "upi", **(response or {}), "id": payment_id, "status": status}
 		return payment_id
 
 	@classmethod
-	def pay(cls, link_id: str, response: dict | None = None) -> str:
-		"""Capture a payment and close the link."""
-		cls.set_status(link_id, "paid")
-		return cls.add_payment(link_id, "captured", response)
+	def pay(cls, session_id: str, response: dict | None = None) -> str:
+		"""Capture a payment and close the link or order."""
+		cls.set_status(session_id, "paid")
+		return cls.add_payment(session_id, "captured", response)
 
 	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink:
 		self.created_links.append(payload)
@@ -85,6 +103,19 @@ class StubRazorpayClient(BaseRazorpayClient):
 			)
 		self.set_status(link_id, "cancelled")
 		return self.get_payment_link(link_id)
+
+	def create_order(self, payload: dict) -> RazorpayOrder:
+		self.created_orders.append(payload)
+		return self.get_order(self.add_order(payload["amount"], payload["currency"]))
+
+	def get_order(self, order_id: str) -> RazorpayOrder:
+		if order_id not in self.orders:
+			frappe.throw(_("Razorpay rejected the request: {0}").format("order not found"))
+		return self.orders[order_id].model_copy()
+
+	def get_order_payments(self, order_id: str) -> list[RazorpayPayment]:
+		self.get_order(order_id)
+		return [payment.model_copy() for payment in self.order_payments[order_id]]
 
 	def get_payment(self, payment_id: str) -> RazorpayPaymentDetails:
 		if payment_id not in self.payments:
@@ -117,6 +148,19 @@ def build_payment_link_event(link_id: str, status: str = "paid", event: str = "p
 			"payload": {"payment_link": {"entity": {"id": link_id, "status": status}}},
 		}
 	).encode()
+
+
+def sign_checkout_payment(order_id: str, payment_id: str, key_secret: str) -> str:
+	"""What Razorpay's checkout script hands the page as `razorpay_signature`."""
+	return sign_payload(f"{order_id}|{payment_id}".encode(), key_secret)
+
+
+def build_order_paid_event(order_id: str, payment_id: str, event: str = "order.paid") -> bytes:
+	payment = {"id": payment_id, "order_id": order_id, "status": "captured"}
+	payload = {"payment": {"entity": payment}}
+	if event == "order.paid":
+		payload["order"] = {"entity": {"id": order_id, "status": "paid"}}
+	return json.dumps({"entity": "event", "event": event, "payload": payload}).encode()
 
 
 def build_refund_event(
