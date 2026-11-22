@@ -8,9 +8,11 @@ wrap the test class in `without_commits()`, or call `remove_test_gateway()` afte
 import atexit
 from contextlib import contextmanager
 from functools import cache
+from unittest.mock import patch
 
 import frappe
 from frappe.database import get_db
+from frappe.database.database import Database
 from frappe.query_builder import Field
 from frappe.utils import now_datetime
 from werkzeug.test import EnvironBuilder
@@ -136,6 +138,30 @@ def commit_elsewhere(query: str, values: tuple | dict | None = None):
 	with other_connection() as database:
 		database.sql(query, values)
 		database.commit()
+
+
+@contextmanager
+def snapshot_isolation(enabled: bool):
+	"""MariaDB's `innodb_snapshot_isolation` on this session and on every connection opened meanwhile.
+
+	MariaDB 11.8 has it ON by default. Then a locking read of a row another worker changed after this
+	transaction's first read fails the transaction (`QueryDeadlockError`, 1020) and rolls it back, instead
+	of reading the newest row. Other connections include `other_connection` and a thread's `frappe.connect`.
+	"""
+	value = "ON" if enabled else "OFF"
+	original_connect = Database.connect
+
+	def connect(database):
+		original_connect(database)
+		database.sql("set session innodb_snapshot_isolation = %s", (value,))
+
+	previous = frappe.db.sql("select @@session.innodb_snapshot_isolation")[0][0]
+	frappe.db.sql("set session innodb_snapshot_isolation = %s", (value,))
+	try:
+		with patch.object(Database, "connect", connect):
+			yield
+	finally:
+		frappe.db.sql("set session innodb_snapshot_isolation = %s", (previous,))
 
 
 def reserve_refund_elsewhere(payment_request: str, amount: float, reference: str | None = None) -> str:
