@@ -67,9 +67,15 @@ class GatewayRefund(Document):
 		)
 
 	def lock_row(self):
+		# The payment request first, as every refund path locks them, so two workers cannot deadlock.
+		frappe.db.get_value("Gateway Payment Request", self.payment_request, "name", for_update=True)
 		reload_for_update(self)
 
 	def apply_gateway_result(self, result: RefundResult):
+		"""A refund another worker settled meanwhile keeps that outcome."""
+		self.lock_row()
+		if self.status != "Pending":
+			return
 		self.refund_id = result.refund_id or self.refund_id
 		self.status = normalise_refund_status(result.status)
 		self.save(ignore_permissions=True)

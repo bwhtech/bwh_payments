@@ -382,6 +382,33 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		with self.assertRaisesRegex(frappe.ValidationError, "exceeds the remaining refundable amount"):
 			payment_request.create_refund(70)
 
+	def test_a_refund_another_worker_settled_while_its_answer_was_on_the_way_is_kept(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		self.take_snapshot(payment_request)
+		refund_id = frappe.generate_hash()
+
+		def settle_elsewhere_then_answer(*args, **kwargs):
+			commit_elsewhere(
+				"update `tabGateway Refund` set status = 'Processed', refund_id = %s, modified = now(6)"
+				" where payment_request = %s",
+				(refund_id, payment_request.name),
+			)
+			commit_elsewhere(
+				"update `tabGateway Payment Request` set refund_amount = 40, status = 'Partially Refunded',"
+				" modified = now(6) where name = %s",
+				(payment_request.name,),
+			)
+			return {"refund_id": refund_id, "status": "processed"}
+
+		settings_class = type(payment_request.get_gateway_settings())
+		with patch.object(settings_class, "refund_payment", side_effect=settle_elsewhere_then_answer):
+			refund = payment_request.create_refund(40)
+
+		self.assertEqual((refund.status, refund.refund_id), ("Processed", refund_id))
+		payment_request.lock_row()
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
 	def test_an_unanswered_refund_on_a_gateway_without_keys_fails(self):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)

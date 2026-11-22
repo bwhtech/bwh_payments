@@ -315,6 +315,8 @@ class GatewayPaymentRequest(Document):
 				)
 			)
 
+		# Read first: past the commit below, an error leaves the refund reserved and Pending.
+		settings = self.get_gateway_settings()
 		refund = frappe.get_doc(
 			{
 				"doctype": "Gateway Refund",
@@ -328,7 +330,6 @@ class GatewayPaymentRequest(Document):
 		# refund holds its amount against any concurrent refund.
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
-		settings = self.get_gateway_settings()
 		try:
 			result = self.send_refund(settings, refund)
 		except Exception as error:
