@@ -91,8 +91,8 @@ class PaymentGatewayBase(ABC):
 	# The gateway can check out inside the caller's page: see `create_embedded_session`.
 	supports_embedded_checkout: bool = False
 	# `refund_payment` takes `idempotency_key` (the same key always names the same refund) and `transaction_ref`
-	# (the settled payment's id, when known). A refund whose answer was lost then stays Pending and is sent
-	# again with its key, instead of failing.
+	# (the settled payment's id, when known). Only `GatewayRefusedError` fails such a refund:
+	# any other error may come after the gateway made it, so the refund stays Pending and is sent again.
 	idempotent_refunds: bool = False
 
 	@abstractmethod

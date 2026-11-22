@@ -10,7 +10,7 @@ from bwh_payments.base_class import CheckoutSession, EmbeddedCheckout, RefundRes
 from bwh_payments.bwh_payments.checkout import get_return_url
 from bwh_payments.bwh_payments.utils import is_local_path, reload_for_update, without_commits
 from bwh_payments.currency import get_minor_unit_exponent
-from bwh_payments.services import GatewayUnavailableError
+from bwh_payments.services import GatewayRefusedError
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
 WEBHOOK_WRITABLE_STATUSES = ("Paid", "Not Paid", "Cancelled", "Expired")
@@ -330,16 +330,22 @@ class GatewayPaymentRequest(Document):
 		# refund holds its amount against any concurrent refund.
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
+		if refusal := self.dispatch_refund(settings, refund):
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit
+			raise refusal
+		return refund
+
+	def dispatch_refund(self, settings, refund) -> Exception | None:
+		"""Send the refund and apply the answer. A refusal fails the refund and is returned, any other error
+		is raised and keeps it Pending."""
 		try:
 			result = self.send_refund(settings, refund)
 		except Exception as error:
-			if not (settings.idempotent_refunds and isinstance(error, GatewayUnavailableError)):
-				refund.mark_failed(str(error))
-				frappe.db.commit()  # nosemgrep: frappe-manual-commit
-			raise
-
+			if not is_refusal(settings, error):
+				raise
+			return error if refund.mark_failed(str(error)) else None
 		refund.apply_gateway_result(result)
-		return refund
+		return None
 
 	def send_refund(self, settings, refund) -> RefundResult:
 		keywords = {}
@@ -383,8 +389,8 @@ class GatewayPaymentRequest(Document):
 			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "not set"]},
 			pluck="name",
 		):
-			refund = frappe.get_doc("Gateway Refund", name)
-			refund.apply_gateway_result(self.send_refund(settings, refund))
+			if self.dispatch_refund(settings, frappe.get_doc("Gateway Refund", name)):
+				frappe.clear_last_message()
 
 	def record_unknown_refunds(self, settings):
 		"""Record refunds raised outside this app whose webhook never arrived."""
@@ -479,6 +485,11 @@ class GatewayPaymentRequest(Document):
 		self.last_webhook_event_id = event_id
 		self.save(ignore_permissions=True)
 		return True
+
+
+def is_refusal(settings, error: Exception) -> bool:
+	"""A gateway without idempotency keys cannot be asked again, so any error fails its refund."""
+	return not settings.idempotent_refunds or isinstance(error, GatewayRefusedError)
 
 
 def get_original_payment_entry(payment_entry: str | int) -> str:

@@ -6,6 +6,10 @@ class GatewayUnavailableError(frappe.ValidationError):
 	"""The gateway could not answer (a 5xx, a rate limit or a dropped connection), so a retry may work."""
 
 
+class GatewayRefusedError(frappe.ValidationError):
+	"""The gateway answered no, so it did nothing. Only this error fails a refund the gateway may have made."""
+
+
 class GatewayModel(BaseModel):
 	"""Gateways sometimes send ids or amounts as bare numbers; read them as strings."""
 

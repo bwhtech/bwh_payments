@@ -45,7 +45,7 @@ class RazorpayRefund(GatewayModel):
 class BaseRazorpayClient(ABC):
 	"""Razorpay's Payment Links, Orders and Refunds APIs.
 
-	A rejected call raises `frappe.ValidationError`, and one Razorpay did not answer `GatewayUnavailableError`.
+	A rejected call raises `GatewayRefusedError`, and one Razorpay did not answer `GatewayUnavailableError`.
 	"""
 
 	@abstractmethod

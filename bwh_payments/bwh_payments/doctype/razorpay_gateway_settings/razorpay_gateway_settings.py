@@ -19,6 +19,7 @@ from bwh_payments.base_class import (
 )
 from bwh_payments.bwh_payments.utils import add_reference_id, get_localised_url
 from bwh_payments.currency import from_minor_units, to_minor_units, validate_transaction_currency
+from bwh_payments.services import GatewayRefusedError
 from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
 	RazorpayPayment,
@@ -326,7 +327,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 			payment_id, to_minor_units(amount, currency), idempotency_key=idempotency_key
 		)
 		if refund.status not in RAZORPAY_ACCEPTED_REFUND_STATUSES:
-			frappe.throw(_("Refund failed with status: {0}").format(refund.status))
+			frappe.throw(_("Refund failed with status: {0}").format(refund.status), GatewayRefusedError)
 
 		if refund.amount is not None:
 			amount = flt(from_minor_units(refund.amount, currency))
@@ -400,5 +401,6 @@ def get_refundable_payment_id(payments: list[RazorpayPayment]) -> str:
 		_(
 			"Razorpay has no captured payment for this checkout. An authorised but uncaptured payment has to be"
 			" refunded from the Razorpay dashboard."
-		)
+		),
+		GatewayRefusedError,
 	)

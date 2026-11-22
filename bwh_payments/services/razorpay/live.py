@@ -5,7 +5,7 @@ from frappe import _
 from frappe.integrations.utils import create_request_log, make_get_request, make_post_request
 from requests import RequestException
 
-from bwh_payments.services import GatewayUnavailableError
+from bwh_payments.services import GatewayRefusedError, GatewayUnavailableError
 from bwh_payments.services.razorpay.base import (
 	BaseRazorpayClient,
 	RazorpayOrder,
@@ -91,16 +91,19 @@ def throw_request_error(url: str, exception: Exception) -> NoReturn:
 	log_request(url, error=description or exception)
 	frappe.throw(
 		_("Razorpay rejected the request: {0}").format(description or _("unknown error")),
-		exc=GatewayUnavailableError if is_transient_error(exception) else frappe.ValidationError,
+		exc=get_error_class(exception),
 	)
 
 
-def is_transient_error(exception: Exception) -> bool:
-	"""No answer, a server error, a rate limit, or the same refund still in progress: a retry may work."""
+def get_error_class(exception: Exception) -> type[frappe.ValidationError]:
+	"""Only a 4xx is Razorpay's own no. No answer, a server error, a rate limit, or the same refund still
+	in progress is unavailable: a retry may work."""
 	response = getattr(exception, "response", None)
 	if response is None:
-		return isinstance(exception, RequestException)
-	return response.status_code >= 500 or response.status_code in TRANSIENT_STATUS_CODES
+		return GatewayUnavailableError if isinstance(exception, RequestException) else frappe.ValidationError
+	if response.status_code >= 500 or response.status_code in TRANSIENT_STATUS_CODES:
+		return GatewayUnavailableError
+	return GatewayRefusedError
 
 
 def read_response(url: str, response) -> dict:
@@ -110,7 +113,9 @@ def read_response(url: str, response) -> dict:
 
 	if error := response.get("error"):
 		log_request(url, error=error.get("description") or error.get("code"))
-		frappe.throw(_("Razorpay rejected the request: {0}").format(error.get("description")))
+		frappe.throw(
+			_("Razorpay rejected the request: {0}").format(error.get("description")), GatewayRefusedError
+		)
 
 	log_request(url, output=summarise_razorpay_entity(response))
 	return response

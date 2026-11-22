@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import frappe
@@ -11,7 +12,7 @@ from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_g
 	make_razorpay_payment_request,
 )
 from bwh_payments.bwh_payments.utils import without_commits
-from bwh_payments.services import GatewayUnavailableError
+from bwh_payments.services import GatewayRefusedError, GatewayUnavailableError
 from bwh_payments.services.razorpay.live import LiveRazorpayClient
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
 from bwh_payments.testing import lose_next_refund_answer
@@ -63,10 +64,9 @@ class TestLiveRazorpayRefund(IntegrationTestCase):
 			with self.subTest(status_code=status_code), self.assertRaises(GatewayUnavailableError):
 				self.refund(return_value=razorpay_error(status_code, "Please try again"))
 
-	def test_a_refused_refund_is_not_retried(self):
-		with self.assertRaises(frappe.ValidationError) as refused:
+	def test_a_refused_refund_is_a_refusal(self):
+		with self.assertRaises(GatewayRefusedError):
 			self.refund(return_value=razorpay_error(400, "The refund amount exceeds the payment"))
-		self.assertNotIsInstance(refused.exception, GatewayUnavailableError)
 
 
 class TestRazorpayLostRefundAnswer(RazorpayTestCase):
@@ -118,3 +118,62 @@ class TestRazorpayLostRefundAnswer(RazorpayTestCase):
 		self.assertEqual(refund.status, "Processed")
 		payment_request.reload()
 		self.assertEqual((flt(payment_request.refund_amount), payment_request.status), (1000, "Refunded"))
+
+	def refund_through_live_razorpay(self, payment_request, amount: float, **answer):
+		"""Only the HTTP call to Razorpay is faked, so the live client parses and logs the answer."""
+		live_client = LiveRazorpayClient("rzp_test_x", "rzp_test_secret")
+		with (
+			patch.object(type(self.get_settings()), "get_client", return_value=live_client),
+			patch("requests.Session.request", return_value=razorpay_response(200, PROCESSED_REFUND)),
+			patch(**answer) if answer else nullcontext(),
+		):
+			return payment_request.create_refund(amount)
+
+	def assert_reserved(self, payment_request, amount: float):
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual(refund.status, "Pending")
+		self.assertEqual(
+			payment_request.get_remaining_refundable_amount(), flt(payment_request.amount) - amount
+		)
+
+	def test_a_refund_razorpay_made_but_this_site_could_not_log_stays_reserved(self):
+		payment_request = self.paid_request(1000)
+
+		with self.assertRaises(frappe.QueryDeadlockError):
+			self.refund_through_live_razorpay(
+				payment_request,
+				200,
+				target="bwh_payments.services.razorpay.live.create_request_log",
+				side_effect=frappe.QueryDeadlockError,
+			)
+
+		self.assert_reserved(payment_request, 200)
+
+	def test_an_unreadable_refund_answer_stays_reserved(self):
+		payment_request = self.paid_request(1000)
+		unreadable = requests.Response()
+		unreadable.status_code = 200
+		unreadable._content = b"<html>OK</html>"
+		unreadable.headers["content-type"] = "text/html"
+
+		with self.assertRaises(frappe.ValidationError):
+			self.refund_through_live_razorpay(
+				payment_request, 200, target="requests.Session.request", return_value=unreadable
+			)
+
+		self.assert_reserved(payment_request, 200)
+
+	def test_a_refund_razorpay_refuses_fails(self):
+		payment_request = self.paid_request(1000)
+
+		with self.assertRaises(GatewayRefusedError):
+			self.refund_through_live_razorpay(
+				payment_request,
+				200,
+				target="requests.Session.request",
+				return_value=razorpay_error(400, "The refund amount exceeds the payment"),
+			)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual(refund.status, "Failed")
+		self.assertEqual(payment_request.get_remaining_refundable_amount(), 1000)

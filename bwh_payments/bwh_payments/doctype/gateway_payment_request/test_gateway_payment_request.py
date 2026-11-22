@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # See license.txt
 
+from contextlib import suppress
 from unittest.mock import patch
 
 import frappe
@@ -13,7 +14,7 @@ from bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_r
 	GatewayPaymentRequest,
 )
 from bwh_payments.currency import to_minor_units
-from bwh_payments.services import GatewayUnavailableError
+from bwh_payments.services import GatewayRefusedError, GatewayUnavailableError
 from bwh_payments.services.stripe.base import StripeRefund
 from bwh_payments.services.stripe.stub import StubStripeClient
 from bwh_payments.testing import commit_elsewhere, reserve_refund_elsewhere
@@ -306,16 +307,23 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)
 
 	def refund_through_an_idempotent_gateway(self, payment_request, amount: float, *answers):
-		"""Refund on a gateway that takes `idempotency_key`; each answer is a result or an error."""
+		"""Refund on a gateway that takes `idempotency_key`; each answer is a result, an error or a function."""
 		settings_class = type(payment_request.get_gateway_settings())
+		pending_answers = iter(answers)
+
+		def answer(*args, **kwargs):
+			next_answer = next(pending_answers)
+			if isinstance(next_answer, Exception):
+				raise next_answer
+			return next_answer(*args, **kwargs) if callable(next_answer) else next_answer
+
 		with (
 			patch.object(settings_class, "idempotent_refunds", True, create=True),
-			patch.object(settings_class, "refund_payment", side_effect=answers) as refund_payment,
+			patch.object(settings_class, "refund_payment", side_effect=answer) as refund_payment,
 		):
-			try:
+			# The first answer is read by the refund, and what it raises by the assertions after.
+			with suppress(Exception):
 				payment_request.refund(amount)
-			except GatewayUnavailableError:
-				pass
 			payment_request.update_pending_refunds()
 		return refund_payment
 
@@ -354,6 +362,46 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual((refund.status, refund.refund_id), ("Processed", refund_id))
 		payment_request.reload()
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def test_an_idempotent_refund_that_fails_for_an_unknown_reason_is_kept_and_sent_again(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		refund_id = frappe.generate_hash()
+
+		self.refund_through_an_idempotent_gateway(
+			payment_request,
+			40,
+			ValueError("unreadable answer"),
+			{"refund_id": refund_id, "status": "processed"},
+		)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual((refund.status, refund.refund_id), ("Processed", refund_id))
+		payment_request.reload()
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def test_an_idempotent_refund_the_gateway_refuses_fails(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		self.refund_through_an_idempotent_gateway(payment_request, 40, GatewayRefusedError("too large"))
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual((refund.status, refund.error), ("Failed", "too large"))
+		self.assertEqual(payment_request.get_remaining_refundable_amount(), 100)
+
+	def test_a_resent_refund_the_gateway_refuses_fails_and_frees_its_amount(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		refund_payment = self.refund_through_an_idempotent_gateway(
+			payment_request, 40, GatewayUnavailableError("timed out"), GatewayRefusedError("too large")
+		)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual(refund_payment.call_count, 2)
+		self.assertEqual((refund.status, refund.error), ("Failed", "too large"))
+		self.assertEqual(payment_request.get_remaining_refundable_amount(), 100)
 
 	def take_snapshot(self, payment_request):
 		"""Commit, which frees the locks earlier tests hold, then read to take a new snapshot.
@@ -412,6 +460,31 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual((refund.status, refund.refund_id), ("Processed", refund_id))
 		payment_request.lock_row()
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def test_a_resend_refused_after_another_worker_settled_the_refund_keeps_that_outcome(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		refund_id = frappe.generate_hash()
+
+		def settle_elsewhere_then_refuse(*args, **kwargs):
+			commit_elsewhere(
+				"update `tabGateway Refund` set status = 'Processed', refund_id = %s, modified = now(6)"
+				" where payment_request = %s",
+				(refund_id, payment_request.name),
+			)
+			raise GatewayRefusedError("already refunded")
+
+		self.refund_through_an_idempotent_gateway(
+			payment_request, 40, GatewayUnavailableError("timed out"), settle_elsewhere_then_refuse
+		)
+
+		refund = frappe.db.get_value(
+			"Gateway Refund",
+			{"payment_request": payment_request.name},
+			["status", "refund_id"],
+			for_update=True,
+		)
+		self.assertEqual(refund, ("Processed", refund_id))
 
 	def test_an_unanswered_refund_on_a_gateway_without_keys_fails(self):
 		payment_request = make_payment_request(100, "SAR")

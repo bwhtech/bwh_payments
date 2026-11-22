@@ -95,7 +95,12 @@ class GatewayRefund(Document):
 		self.save(ignore_permissions=True)
 		return True
 
-	def mark_failed(self, error: str):
+	def mark_failed(self, error: str) -> bool:
+		"""A refund another worker settled meanwhile keeps that outcome."""
+		self.lock_row()
+		if self.status != "Pending":
+			return False
 		self.status = "Failed"
 		self.error = error
 		self.save(ignore_permissions=True)
+		return True
