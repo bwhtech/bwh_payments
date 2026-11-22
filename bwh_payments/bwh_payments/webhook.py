@@ -4,7 +4,7 @@ from frappe.integrations.utils import create_request_log
 from frappe.rate_limiter import rate_limit
 
 from bwh_payments.base_class import WebhookEvent
-from bwh_payments.bwh_payments.utils import run_as_administrator
+from bwh_payments.bwh_payments.utils import run_as_administrator, without_commits
 from bwh_payments.services import GatewayUnavailableError
 
 WEBHOOK_ACCEPTED = {"status": "ok"}
@@ -105,8 +105,10 @@ def process_webhook(integration_request: str):
 
 	frappe.db.savepoint(WEBHOOK_SAVEPOINT)
 	try:
-		payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
-		apply_event_as_administrator(payment_request, event)
+		# Live clients commit as they log each call, which would drop the savepoint and the row locks.
+		with without_commits():
+			payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
+			apply_event_as_administrator(payment_request, event)
 	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError) as error:
 		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		# Frappe's job runner retries only RetryBackgroundJobError, not the DB errors it wraps.
