@@ -11,17 +11,20 @@ from frappe.utils.data import flt
 from bwh_payments import testing
 from bwh_payments.api import confirm_embedded_payment, create_payment, refund, sync_refunds
 
+# Not the default "Test Gateway": a consumer app's settings on the same site may still link to that one.
+GATEWAY = "bwh_payments Helpers Gateway"
+
 
 class TestConsumerTestHelpers(IntegrationTestCase):
 	def setUp(self):
 		testing.reset()
-		self.gateway = testing.configure_test_gateway()
+		self.gateway = testing.configure_test_gateway(GATEWAY)
 
 	@classmethod
 	def tearDownClass(cls):
 		super().tearDownClass()
 		frappe.db.rollback()
-		testing.remove_test_gateway()
+		testing.remove_test_gateway(GATEWAY)
 		frappe.db.commit()
 
 	def make_paid_payment(self):
