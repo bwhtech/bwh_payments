@@ -41,6 +41,7 @@ class GatewayPaymentRequest(Document):
 		last_webhook_event_id: DF.Data | None
 		order_ref: DF.Data | None
 		order_url: DF.SmallText | None
+		payment_method: DF.Data | None
 		ref_docname: DF.DynamicLink
 		ref_doctype: DF.Link
 		refund_amount: DF.Currency
@@ -85,6 +86,7 @@ class GatewayPaymentRequest(Document):
 			self.create_session()
 		elif not self.is_new() and self.has_value_changed("status") and self.status == "Paid":
 			self.gateway_transaction_ref = self.gateway_transaction_ref or self.fetch_transaction_ref()
+			self.payment_method = self.payment_method or self.fetch_payment_method()
 
 	def on_update(self):
 		# frappe/payments convention, so apps written for it settle orders unchanged.
@@ -129,6 +131,14 @@ class GatewayPaymentRequest(Document):
 			# Only refunds raised outside this app need it, so a failed lookup must not block the payment.
 			frappe.clear_last_message()
 			frappe.log_error(title=_("Could not read the settled transaction for {0}").format(self.name))
+			return None
+
+	def fetch_payment_method(self) -> str | None:
+		try:
+			return self.get_gateway_settings().get_payment_method(self.order_ref)
+		except Exception:
+			frappe.clear_last_message()
+			frappe.log_error(title=_("Could not read the payment method for {0}").format(self.name))
 			return None
 
 	def get_customer_details(self) -> dict:

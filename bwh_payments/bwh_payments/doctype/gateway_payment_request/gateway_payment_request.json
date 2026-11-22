@@ -27,6 +27,7 @@
   "amount",
   "erpnext_payment_request",
   "gateway_transaction_ref",
+  "payment_method",
   "last_webhook_event_id",
   "customer_section",
   "customer_email",
@@ -189,6 +190,13 @@
    "read_only": 1
   },
   {
+   "description": "How the shopper paid, such as upi or card_credit, as the gateway reports it.",
+   "fieldname": "payment_method",
+   "fieldtype": "Data",
+   "label": "Payment Method",
+   "read_only": 1
+  },
+  {
    "description": "Gateway event id of the last applied webhook, used to drop replayed deliveries.",
    "fieldname": "last_webhook_event_id",
    "fieldtype": "Data",
@@ -262,7 +270,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-16 00:00:00.000000",
+ "modified": "2026-11-22 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "BWH Payments",
  "name": "Gateway Payment Request",

@@ -1,5 +1,6 @@
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RazorpayTestCase,
+	make_razorpay_payment_request,
 )
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
 
@@ -84,3 +85,23 @@ class TestRazorpayPaymentMethod(RazorpayTestCase):
 		payment_id = StubRazorpayClient.add_payment(link_id, "captured", recorded_payment("netbanking"))
 
 		self.assertEqual(self.get_settings().get_payment_method(payment_id), "netbanking")
+
+
+class TestPaymentRequestPaymentMethod(RazorpayTestCase):
+	def test_a_paid_request_stores_how_it_was_paid(self):
+		payment_request = make_razorpay_payment_request(500)
+		StubRazorpayClient.pay(payment_request.order_ref, CARD_PAYMENT)
+
+		payment_request.sync_status()
+
+		self.assertEqual(payment_request.payment_method, "card_credit")
+
+	def test_a_failed_method_lookup_does_not_block_the_payment(self):
+		payment_request = make_razorpay_payment_request(500)
+		payment_id = StubRazorpayClient.pay(payment_request.order_ref)
+		del StubRazorpayClient.payments[payment_id]
+
+		payment_request.sync_status()
+
+		self.assertEqual(payment_request.status, "Paid")
+		self.assertIsNone(payment_request.payment_method)
