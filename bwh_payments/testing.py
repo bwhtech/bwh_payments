@@ -20,6 +20,7 @@ from bwh_payments.currency import to_minor_units
 from bwh_payments.services.razorpay.stub import (  # nosemgrep: frappe-monkey-patching-not-allowed
 	StubRazorpayClient,
 	build_refund_event,
+	sign_checkout_payment,
 	sign_payload,
 )
 
@@ -125,6 +126,19 @@ def pay(payment_request: str, payment_method: str = "upi"):
 	StubRazorpayClient.pay(doc.order_ref, PAYMENT_METHOD_RESPONSES[payment_method])
 	with run_as_administrator():
 		doc.sync_status()
+
+
+def complete_embedded_checkout(payment_request: str, payment_method: str = "upi") -> dict:
+	"""The shopper pays in an embedded checkout. Returns what the checkout script hands the page,
+	for `api.confirm_embedded_payment` or the caller's own endpoint that calls it."""
+	order_id = frappe.db.get_value("Gateway Payment Request", payment_request, "order_ref")
+	payment_id = StubRazorpayClient.pay(order_id, PAYMENT_METHOD_RESPONSES[payment_method])
+	key_secret = frappe.get_single(SETTINGS).get_password("key_secret")
+	return {
+		"razorpay_payment_id": payment_id,
+		"razorpay_order_id": order_id,
+		"razorpay_signature": sign_checkout_payment(order_id, payment_id, key_secret),
+	}
 
 
 def set_next_refund_status(status: str):

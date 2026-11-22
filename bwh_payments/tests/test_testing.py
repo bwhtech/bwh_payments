@@ -9,7 +9,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
 from bwh_payments import testing
-from bwh_payments.api import create_payment, refund, sync_refunds
+from bwh_payments.api import confirm_embedded_payment, create_payment, refund, sync_refunds
 
 
 class TestConsumerTestHelpers(IntegrationTestCase):
@@ -49,6 +49,18 @@ class TestConsumerTestHelpers(IntegrationTestCase):
 		self.assertEqual(
 			frappe.db.get_value("Gateway Payment Request", payment_request.name, "payment_method"),
 			"card_debit",
+		)
+
+	def test_an_embedded_checkout_paid_in_the_dialog_is_confirmed_by_the_request(self):
+		payment_request = create_payment("Currency", "INR", 100, "INR", self.gateway, checkout="embedded")
+
+		result = testing.complete_embedded_checkout(payment_request.name, payment_method="card_credit")
+
+		self.assertEqual(result["razorpay_order_id"], payment_request.order_ref)
+		self.assertEqual(confirm_embedded_payment(payment_request.name, result), "Paid")
+		self.assertEqual(
+			frappe.db.get_value("Gateway Payment Request", payment_request.name, "payment_method"),
+			"card_credit",
 		)
 
 	def test_a_pending_refund_settles_when_its_webhook_arrives(self):
