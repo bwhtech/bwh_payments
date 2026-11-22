@@ -45,9 +45,10 @@ def create_payment(
 
 	With `redirect_to` (a path on this site), the gateway returns the shopper through
 	`checkout.return_from_gateway`, which confirms the payment before redirecting there.
+	A `description` is shown at the checkout by gateways that support one.
 	"""
 	# The insert skips permissions, so user input must not reach status or the ledger.
-	allowed = ("company", "redirect_to")
+	allowed = ("company", "redirect_to", "description")
 	if blocked := [field for field in fields if field not in allowed and not field.startswith("customer_")]:
 		frappe.throw(_("create_payment cannot set {0}").format(", ".join(sorted(blocked))))
 

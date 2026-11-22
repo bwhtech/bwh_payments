@@ -25,6 +25,7 @@
   "column_break_qowt",
   "ref_docname",
   "amount",
+  "description",
   "erpnext_payment_request",
   "gateway_transaction_ref",
   "payment_method",
@@ -173,6 +174,14 @@
    "label": "Amount",
    "options": "currency_code",
    "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "What the shopper is paying for, shown at the gateway's checkout where it supports one.",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description",
+   "read_only": 1,
    "set_only_once": 1
   },
   {

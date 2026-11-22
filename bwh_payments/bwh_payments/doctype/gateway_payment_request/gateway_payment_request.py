@@ -34,6 +34,7 @@ class GatewayPaymentRequest(Document):
 		customer_phone: DF.Data | None
 		customer_ref: DF.Link | None
 		customer_surname: DF.Data | None
+		description: DF.SmallText | None
 		erpnext_payment_request: DF.Link | None
 		failure_url: DF.Data | None
 		gateway: DF.Link
@@ -107,15 +108,13 @@ class GatewayPaymentRequest(Document):
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
-		# Passed only when set, so gateways written before return_url keep working.
-		return_url = {"return_url": get_return_url(self.name)} if self.redirect_to else {}
 		session = CheckoutSession.model_validate(
 			self.get_gateway_settings().create_session(
 				flt(self.amount),
 				self.currency_code,
 				reference=self.name,
 				customer=self.get_customer_details(),
-				**return_url,
+				**self.get_optional_session_arguments(),
 			)
 		)
 		self.order_ref = session.session_id
@@ -123,6 +122,13 @@ class GatewayPaymentRequest(Document):
 		self.success_url = session.success_url
 		self.cancel_url = session.cancel_url
 		self.failure_url = session.failure_url
+
+	def get_optional_session_arguments(self) -> dict:
+		# Passed only when set, so gateways written before these arguments keep working.
+		arguments = {"return_url": get_return_url(self.name)} if self.redirect_to else {}
+		if self.description:
+			arguments["description"] = self.description
+		return arguments
 
 	def fetch_transaction_ref(self) -> str | None:
 		try:

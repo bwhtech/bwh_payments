@@ -98,6 +98,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		reference: str | None = None,
 		customer: dict | None = None,
 		return_url: str | None = None,
+		description: str | None = None,
 	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
@@ -107,7 +108,7 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 			"amount": to_minor_units(amount, currency),
 			"currency": currency.upper(),
 			"reference_id": reference,
-			"description": _("Online order payment"),
+			"description": description or _("Online order payment"),
 			"callback_url": return_url or self.build_success_url(reference),
 			"callback_method": "get",
 			# Explicit, so the account's billable SMS/email defaults do not apply.

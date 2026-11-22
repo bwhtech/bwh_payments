@@ -88,8 +88,12 @@ class PaymentGatewayBase(ABC):
 		reference: str | None = None,
 		customer: dict | None = None,
 		return_url: str | None = None,
+		description: str | None = None,
 	) -> CheckoutSession:
-		"""With `return_url`, every way back from the checkout (paid, failed, cancelled) goes there."""
+		"""With `return_url`, every way back from the checkout (paid, failed, cancelled) goes there.
+
+		`return_url` and `description` are passed only when set, so a gateway may leave them out.
+		"""
 
 	@abstractmethod
 	def get_payment_status(self, session_id: str) -> str:
