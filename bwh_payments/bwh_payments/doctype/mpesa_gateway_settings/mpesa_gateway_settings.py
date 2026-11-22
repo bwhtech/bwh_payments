@@ -103,6 +103,7 @@ class MpesaGatewaySettings(Document, PaymentGatewayBase):
 		reference: str | None = None,
 		customer: dict | None = None,
 		return_url: str | None = None,
+		description: str | None = None,
 	) -> CheckoutSession:
 		validate_transaction_currency(currency)
 		self.validate_currency(currency)

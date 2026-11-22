@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # See license.txt
 
+import inspect
 from unittest.mock import patch
 
 import frappe
@@ -116,6 +117,12 @@ class TestGateways(IntegrationTestCase):
 				settings = frappe.get_single(gateway.settings_doctype)
 				self.assertIsInstance(settings, PaymentGatewayBase)
 				self.assertEqual(gateway.name, settings.get_gateway_name())
+
+	def test_every_gateway_accepts_a_checkout_description(self):
+		for gateway in get_gateways():
+			with self.subTest(gateway=gateway.name):
+				create_session = inspect.signature(frappe.get_single(gateway.settings_doctype).create_session)
+				create_session.bind(100, "INR", reference="GPR-0001", description="Acme · BK-0001")
 
 	def test_a_gateway_carries_what_a_merchant_needs_to_choose_and_set_it_up(self):
 		gateway = self.get_gateway("Razorpay")

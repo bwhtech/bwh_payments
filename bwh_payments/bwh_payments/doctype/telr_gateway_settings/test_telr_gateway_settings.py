@@ -66,6 +66,19 @@ class TestTelrGatewaySettings(IntegrationTestCase):
 		self.assertEqual(self.get_payment_status("Cancelled", 1), "Cancelled")
 		self.assertEqual(self.get_payment_status("Who Knows", 1), "Pending")
 
+	def test_the_checkout_shows_the_description(self):
+		settings = frappe.get_single("Telr Gateway Settings")
+
+		settings.create_session(
+			12.345,
+			"KWD",
+			reference="GPR-0001",
+			return_url="https://shop.test/return",
+			description="Acme · BK-0001",
+		)
+
+		self.assertEqual(StubTelrClient.created_orders[-1]["order"]["description"], "Acme · BK-0001")
+
 	def test_create_session_bills_major_units_and_brings_the_shopper_back_with_our_reference(self):
 		settings = frappe.get_single("Telr Gateway Settings")
 		settings.authorised_url = "https://shop.test/en/confirm?ref=abc"

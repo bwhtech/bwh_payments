@@ -92,7 +92,7 @@ class PaymentGatewayBase(ABC):
 	) -> CheckoutSession:
 		"""With `return_url`, every way back from the checkout (paid, failed, cancelled) goes there.
 
-		`return_url` and `description` are passed only when set, so a gateway may leave them out.
+		Every gateway accepts `description`, and shows it at the checkout if it can.
 		"""
 
 	@abstractmethod

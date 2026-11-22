@@ -72,6 +72,7 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 		reference: str | None = None,
 		customer: dict | None = None,
 		return_url: str | None = None,
+		description: str | None = None,
 	) -> CheckoutSession:
 		currency = currency or self.currency
 		validate_transaction_currency(currency)
@@ -90,7 +91,7 @@ class TelrGatewaySettings(Document, PaymentGatewayBase):
 				"test": "1" if self.test_mode else "0",
 				"amount": format_telr_amount(amount, currency),
 				"currency": currency,
-				"description": _("Online order payment"),
+				"description": description or _("Online order payment"),
 			},
 			return_urls,
 			customer or {},
