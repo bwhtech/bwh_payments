@@ -90,6 +90,9 @@ class PaymentGatewayBase(ABC):
 	reusable_checkout: bool = False
 	# The gateway can check out inside the caller's page: see `create_embedded_session`.
 	supports_embedded_checkout: bool = False
+	# `refund_payment` takes `idempotency_key`, and the same key always names the same refund. A refund whose
+	# answer was lost then stays Pending and is sent again with its key, instead of failing.
+	idempotent_refunds: bool = False
 
 	@abstractmethod
 	def create_session(

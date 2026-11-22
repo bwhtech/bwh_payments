@@ -10,6 +10,7 @@ from bwh_payments.base_class import CheckoutSession, EmbeddedCheckout, RefundRes
 from bwh_payments.bwh_payments.checkout import get_return_url
 from bwh_payments.bwh_payments.utils import is_local_path, without_commits
 from bwh_payments.currency import get_minor_unit_exponent
+from bwh_payments.services import GatewayUnavailableError
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
 WEBHOOK_WRITABLE_STATUSES = ("Paid", "Not Paid", "Cancelled", "Expired")
@@ -328,15 +329,22 @@ class GatewayPaymentRequest(Document):
 		# refund holds its amount against any concurrent refund.
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
+		settings = self.get_gateway_settings()
 		try:
-			result = self.get_gateway_settings().refund_payment(self.order_ref, amount, self.currency_code)
+			result = self.send_refund(settings, refund)
 		except Exception as error:
-			refund.mark_failed(str(error))
-			frappe.db.commit()  # nosemgrep: frappe-manual-commit
+			if not (settings.idempotent_refunds and isinstance(error, GatewayUnavailableError)):
+				refund.mark_failed(str(error))
+				frappe.db.commit()  # nosemgrep: frappe-manual-commit
 			raise
 
-		refund.apply_gateway_result(RefundResult.model_validate(result or {}))
+		refund.apply_gateway_result(result)
 		return refund
+
+	def send_refund(self, settings, refund) -> RefundResult:
+		keywords = {"idempotency_key": refund.name} if settings.idempotent_refunds else {}
+		result = settings.refund_payment(self.order_ref, flt(refund.amount), self.currency_code, **keywords)
+		return RefundResult.model_validate(result or {})
 
 	@frappe.whitelist()
 	def sync_refunds(self):
@@ -352,6 +360,8 @@ class GatewayPaymentRequest(Document):
 
 	def settle_pending_refunds(self, settings=None):
 		settings = settings or self.get_gateway_settings()
+		if settings.idempotent_refunds:
+			self.resend_unanswered_refunds(settings)
 		for name in frappe.get_all(
 			"Gateway Refund",
 			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "set"]},
@@ -361,6 +371,16 @@ class GatewayPaymentRequest(Document):
 			result = settings.get_refund_status(self.order_ref, refund.refund_id)
 			if result:
 				refund.apply_gateway_status(RefundResult.model_validate(result).status)
+
+	def resend_unanswered_refunds(self, settings):
+		"""The same key makes the gateway return the refund it already made, or make it now."""
+		for name in frappe.get_all(
+			"Gateway Refund",
+			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "not set"]},
+			pluck="name",
+		):
+			refund = frappe.get_doc("Gateway Refund", name)
+			refund.apply_gateway_result(self.send_refund(settings, refund))
 
 	def record_unknown_refunds(self, settings):
 		"""Record refunds raised outside this app whose webhook never arrived."""

@@ -13,6 +13,7 @@ from bwh_payments.bwh_payments.doctype.gateway_payment_request.gateway_payment_r
 	GatewayPaymentRequest,
 )
 from bwh_payments.currency import to_minor_units
+from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.stripe.base import StripeRefund
 from bwh_payments.services.stripe.stub import StubStripeClient
 
@@ -302,6 +303,65 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		self.assertEqual(payment_request.refund_id, "12345")
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def refund_through_an_idempotent_gateway(self, payment_request, amount: float, *answers):
+		"""Refund on a gateway that takes `idempotency_key`; each answer is a result or an error."""
+		settings_class = type(payment_request.get_gateway_settings())
+		with (
+			patch.object(settings_class, "idempotent_refunds", True, create=True),
+			patch.object(settings_class, "refund_payment", side_effect=answers) as refund_payment,
+		):
+			try:
+				payment_request.refund(amount)
+			except GatewayUnavailableError:
+				pass
+			payment_request.update_pending_refunds()
+		return refund_payment
+
+	def test_an_idempotent_gateway_is_sent_the_refund_name_as_its_key(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		refund_payment = self.refund_through_an_idempotent_gateway(
+			payment_request, 40, {"refund_id": frappe.generate_hash(), "status": "processed"}
+		)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		refund_payment.assert_called_once_with(
+			payment_request.order_ref, 40.0, "SAR", idempotency_key=refund.name
+		)
+
+	def test_an_unanswered_idempotent_refund_stays_reserved_and_is_sent_again_with_its_key(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		refund_id = frappe.generate_hash()
+
+		refund_payment = self.refund_through_an_idempotent_gateway(
+			payment_request,
+			40,
+			GatewayUnavailableError("timed out"),
+			{"refund_id": refund_id, "status": "processed"},
+		)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		keys = [call.kwargs["idempotency_key"] for call in refund_payment.call_args_list]
+		self.assertEqual(keys, [refund.name, refund.name])
+		self.assertEqual((refund.status, refund.refund_id), ("Processed", refund_id))
+		payment_request.reload()
+		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def test_an_unanswered_refund_on_a_gateway_without_keys_fails(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+
+		with patch.object(
+			StubStripeClient, "create_refund", side_effect=GatewayUnavailableError("timed out")
+		):
+			with self.assertRaises(GatewayUnavailableError):
+				payment_request.refund(40)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual(refund.status, "Failed")
 
 	def test_a_refund_echo_without_id_or_amount_still_books_the_refund(self):
 		payment_request = make_payment_request(100, "SAR")
