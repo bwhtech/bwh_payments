@@ -343,7 +343,9 @@ class GatewayPaymentRequest(Document):
 		except Exception as error:
 			if not is_refusal(settings, error):
 				raise
+			start_answer_transaction()
 			return error if refund.mark_failed(str(error)) else None
+		start_answer_transaction()
 		refund.apply_gateway_result(result)
 		return None
 
@@ -485,6 +487,16 @@ class GatewayPaymentRequest(Document):
 		self.last_webhook_event_id = event_id
 		self.save(ignore_permissions=True)
 		return True
+
+
+def start_answer_transaction():
+	"""The gateway's answer is applied in a transaction whose first read is its lock.
+
+	Under MariaDB's snapshot isolation, a lock on a row another worker changed after an earlier read in
+	the transaction fails it, and the refund the gateway just made would stay unrecorded. A no-op inside
+	`without_commits()`, where such a failure retries the webhook job instead.
+	"""
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 
 def is_refusal(settings, error: Exception) -> bool:
