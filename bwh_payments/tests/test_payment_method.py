@@ -1,9 +1,14 @@
+from contextlib import contextmanager
 from unittest.mock import patch
+
+import frappe
+from frappe.database import get_db
 
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RazorpayTestCase,
 	make_razorpay_payment_request,
 )
+from bwh_payments.services.razorpay.live import log_request
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
 
 # A GET /payments/{id} response as Razorpay sends it, trimmed of fields nobody reads.
@@ -41,6 +46,35 @@ CARD_PAYMENT = {
 def recorded_payment(method: str, **fields) -> dict:
 	payment = {key: value for key, value in CARD_PAYMENT.items() if key not in ("card", "card_id")}
 	return {**payment, "method": method, **fields}
+
+
+@contextmanager
+def other_connection():
+	"""A second database session, as a concurrent worker would hold."""
+	conf = frappe.conf
+	database = get_db(
+		socket=conf.db_socket,
+		host=conf.db_host,
+		port=conf.db_port,
+		user=conf.db_user,
+		password=conf.db_password,
+		cur_db_name=conf.db_name,
+	)
+	database.connect()
+	try:
+		yield database
+	finally:
+		database.rollback()
+		database.close()
+
+
+def is_locked_elsewhere(doctype: str, name: str) -> bool:
+	with other_connection() as database:
+		try:
+			database.sql(f"select name from `tab{doctype}` where name = %s for update nowait", name)
+		except frappe.QueryTimeoutError:
+			return True
+		return False
 
 
 class TestRazorpayPaymentMethod(RazorpayTestCase):
@@ -132,3 +166,23 @@ class TestPaymentRequestPaymentMethod(RazorpayTestCase):
 
 		self.assertEqual(payment_request.status, "Paid")
 		self.assertIsNone(payment_request.payment_method)
+
+	def test_the_payment_stays_locked_while_its_method_is_read(self):
+		payment_request = make_razorpay_payment_request(500)
+		StubRazorpayClient.pay(payment_request.order_ref, CARD_PAYMENT)
+		locked_during_lookup = []
+		get_payment = StubRazorpayClient.get_payment
+
+		def get_payment_as_the_live_client(client, payment_id):
+			# The live client logs every call, and logging commits.
+			log_request(f"payments/{payment_id}")
+			locked_during_lookup.append(is_locked_elsewhere(payment_request.doctype, payment_request.name))
+			return get_payment(client, payment_id)
+
+		with patch.object(
+			StubRazorpayClient, "get_payment", autospec=True, side_effect=get_payment_as_the_live_client
+		):
+			payment_request.apply_webhook_status("Paid", event_id="evt_locked_lookup")
+
+		self.assertEqual(locked_during_lookup, [True])
+		self.assertEqual(payment_request.payment_method, "card_credit")

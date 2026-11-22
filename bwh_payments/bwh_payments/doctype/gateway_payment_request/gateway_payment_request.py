@@ -8,7 +8,7 @@ from frappe.utils.data import cstr, flt
 
 from bwh_payments.base_class import CheckoutSession, EmbeddedCheckout, RefundResult
 from bwh_payments.bwh_payments.checkout import get_return_url
-from bwh_payments.bwh_payments.utils import is_local_path
+from bwh_payments.bwh_payments.utils import is_local_path, without_commits
 from bwh_payments.currency import get_minor_unit_exponent
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
@@ -183,7 +183,9 @@ class GatewayPaymentRequest(Document):
 	def fetch_from_gateway(self, read, error_title: str):
 		"""Only refunds and payouts need what is read here, so a failed lookup must not block the payment."""
 		try:
-			return read(self.get_gateway_settings())
+			# Live clients log each call, and that commit would drop the settlement lock mid-save.
+			with without_commits():
+				return read(self.get_gateway_settings())
 		except Exception:
 			frappe.clear_last_message()
 			frappe.log_error(title=error_title)

@@ -94,6 +94,19 @@ def run_as_administrator():
 		frappe.local.session.update(session)
 
 
+@contextmanager
+def without_commits():
+	"""Turn commits into no-ops, such as the one `create_request_log` makes after every gateway call.
+
+	Rollback is a no-op inside it too, except to a savepoint.
+	"""
+	frappe.db._disable_transaction_control += 1
+	try:
+		yield
+	finally:
+		frappe.db._disable_transaction_control -= 1
+
+
 def is_local_path(url: str | None) -> bool:
 	"""A path on this site. Browsers read `//host` and `/\\host` as another site."""
 	if not url or not url.startswith("/") or url.startswith(("//", "/\\")):

@@ -15,7 +15,7 @@ from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
 from bwh_payments.bwh_payments import webhook
-from bwh_payments.bwh_payments.utils import run_as_administrator
+from bwh_payments.bwh_payments.utils import run_as_administrator, without_commits
 from bwh_payments.currency import to_minor_units
 from bwh_payments.services.razorpay.stub import (  # nosemgrep: frappe-monkey-patching-not-allowed
 	StubRazorpayClient,
@@ -38,19 +38,6 @@ PAYMENT_METHOD_RESPONSES = {
 	"emi": {"method": "emi"},
 	"paylater": {"method": "paylater"},
 }
-
-
-@contextmanager
-def without_commits():
-	"""Turn commits into no-ops, so the test's own rollback also undoes refunds and webhook logs.
-
-	Leave it before the class rollback runs: inside it, rollback is a no-op too.
-	"""
-	frappe.db._disable_transaction_control += 1
-	try:
-		yield
-	finally:
-		frappe.db._disable_transaction_control -= 1
 
 
 def reset():
