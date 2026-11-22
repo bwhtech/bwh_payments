@@ -41,6 +41,16 @@ class TestConsumerTestHelpers(IntegrationTestCase):
 			frappe.db.get_value("Gateway Payment Request", payment_request.name, "status"), "Paid"
 		)
 
+	def test_pay_records_the_payment_method_the_test_asks_for(self):
+		payment_request = create_payment("Currency", "INR", 100, "INR", self.gateway)
+
+		testing.pay(payment_request.name, payment_method="card_debit")
+
+		self.assertEqual(
+			frappe.db.get_value("Gateway Payment Request", payment_request.name, "payment_method"),
+			"card_debit",
+		)
+
 	def test_a_pending_refund_settles_when_its_webhook_arrives(self):
 		payment_request = self.make_paid_payment()
 		testing.set_next_refund_status("Pending")

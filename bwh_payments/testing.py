@@ -27,6 +27,16 @@ TEST_GATEWAY = "Test Gateway"
 SETTINGS = "Razorpay Gateway Settings"
 WEBHOOK_SECRET = "bwh_payments_test_webhook_secret"
 REFUND_STATUSES = {"Pending": "pending", "Processed": "processed", "Failed": "failed"}
+# What GET /payments/{id} says for each payment method a caller can ask `pay` for.
+PAYMENT_METHOD_RESPONSES = {
+	"upi": {"method": "upi"},
+	"card_credit": {"method": "card", "card": {"type": "credit"}},
+	"card_debit": {"method": "card", "card": {"type": "debit"}},
+	"netbanking": {"method": "netbanking"},
+	"wallet": {"method": "wallet"},
+	"emi": {"method": "emi"},
+	"paylater": {"method": "paylater"},
+}
 
 
 @contextmanager
@@ -108,10 +118,11 @@ def remove_test_gateway(name: str = TEST_GATEWAY):
 	)
 
 
-def pay(payment_request: str):
-	"""The shopper pays, and the payment is confirmed as it would be on their return."""
+def pay(payment_request: str, payment_method: str = "upi"):
+	"""The shopper pays with `payment_method` (a PAYMENT_METHOD_RESPONSES key), and the payment is
+	confirmed as it would be on their return."""
 	doc = frappe.get_doc("Gateway Payment Request", payment_request)
-	StubRazorpayClient.pay(doc.order_ref)
+	StubRazorpayClient.pay(doc.order_ref, PAYMENT_METHOD_RESPONSES[payment_method])
 	with run_as_administrator():
 		doc.sync_status()
 
