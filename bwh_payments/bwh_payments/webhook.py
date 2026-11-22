@@ -109,9 +109,13 @@ def process_webhook(integration_request: str):
 		with without_commits():
 			payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
 			apply_event_as_administrator(payment_request, event)
-	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError) as error:
+	except frappe.QueryDeadlockError as error:
+		# The database rolled the whole transaction back, savepoint and all: a deadlock, or a lock on a row
+		# changed after this job's first read under snapshot isolation. Frappe version-16's job runner
+		# retries RetryBackgroundJobError, not the DB errors it wraps.
+		raise frappe.RetryBackgroundJobError from error
+	except frappe.QueryTimeoutError as error:
 		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
-		# Frappe's job runner retries only RetryBackgroundJobError, not the DB errors it wraps.
 		raise frappe.RetryBackgroundJobError from error
 	except (GatewayUnavailableError, frappe.RetryBackgroundJobError) as error:
 		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
