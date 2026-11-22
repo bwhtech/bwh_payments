@@ -114,7 +114,8 @@ An insert that is already settled is an import and fires neither.
 
 `bwh_payments/testing.py` lets consumer apps test against the in-memory gateway without naming a provider:
 `configure_test_gateway`, `pay` (with an optional `payment_method`), `set_next_refund_status`, `set_refund_status`, `send_refund_webhook`,
-`send_external_refund_webhook`, `without_commits`. `bwh_payments/migrate/frappe_payments.py`
+`send_external_refund_webhook`, `lose_next_refund_answer`, `without_commits`, and for races
+`other_connection`, `commit_elsewhere` and `reserve_refund_elsewhere`. `bwh_payments/migrate/frappe_payments.py`
 `import_gateways()` turns frappe/payments gateways into profiles with the same names.
 
 ### Payment flow
@@ -125,13 +126,15 @@ An insert that is already settled is an import and fires neither.
 2. `before_save` calls `create_session` once (when `order_ref` is empty) and stores `order_ref` (gateway
    session id, unique), `order_url` (checkout URL for the shopper) and the return URLs. With `redirect_to`,
    every return URL is `checkout.return_from_gateway?request=<name>`.
-3. Status moves from `Pending` by one of three paths, all under a row lock (`lock_row`). On the move to
+3. Status moves from `Pending` by one of three paths, all under a row lock (`lock_row`, which reloads with
+   a locking read: a plain read keeps the transaction's old snapshot under REPEATABLE READ). On the move to
    `Paid`, `gateway_transaction_ref` and `payment_method` are read through `get_transaction_ref` and
    `get_payment_method` (a failure never blocks it).
    - **Webhook**: `webhook.handle` (guest POST, `?gateway=<profile>`, rate-limited) verifies the delivery,
      logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
      queues `process_webhook`. The job applies it as Administrator (a `sync_status` event runs
-     `sync_status` on a Pending request instead); a failure is rolled back to a
+     `sync_status` on a Pending request instead) with commits held, so a live client's request log cannot
+     drop the savepoint. A failure is rolled back to that
      savepoint, logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
      are raised as `RetryBackgroundJobError`, because Frappe's job runner does not retry the
      `QueryDeadlockError` / `QueryTimeoutError` it wraps them in. A live client raises
@@ -190,7 +193,9 @@ the payload the script would hand the page.
 - **Razorpay**: raw HTTP (Payment Links API) via `frappe.integrations.utils.make_post_request` /
   `make_get_request`, no SDK. Refund events: `refund.created` (pending), `refund.processed`,
   `refund.failed`. A session id starting `pay_` is a payment imported from before Payment Links and is
-  refunded directly.
+  refunded directly. Refunds are `idempotent_refunds`: the key goes in the `X-Refund-Idempotency` header.
+  A timeout, a dropped connection, a 5xx, a 429 or a 409 (the same key still in progress) is a
+  `GatewayUnavailableError`.
 - **Telr**: no signed webhook. `handle_webhook` returns `None` on purpose; status comes only from
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
