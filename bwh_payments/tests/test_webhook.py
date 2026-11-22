@@ -12,7 +12,7 @@ from frappe.utils.data import flt
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
-from bwh_payments.base_class import WebhookEvent
+from bwh_payments.base_class import RefundResult, WebhookEvent
 from bwh_payments.bwh_payments import webhook
 from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_payment_request import (
 	GATEWAY,
@@ -20,6 +20,9 @@ from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_paym
 	configure_stripe_gateway,
 	make_payment_request,
 	remove_stripe_gateway,
+)
+from bwh_payments.bwh_payments.doctype.stripe_gateway_settings.stripe_gateway_settings import (
+	StripeGatewaySettings,
 )
 from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.stripe.stub import (
@@ -269,6 +272,28 @@ class TestWebhook(IntegrationTestCase):
 
 		refund.reload()
 		self.assertEqual(refund.status, "Processed")
+
+	def test_a_sync_event_records_a_refund_made_at_the_gateway(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		made_at_the_gateway = [RefundResult(refund_id="re_dashboard", status="succeeded", amount=30)]
+
+		with patch.object(StripeGatewaySettings, "list_refunds", return_value=made_at_the_gateway):
+			webhook.process_webhook(
+				webhook.log_webhook(
+					GATEWAY,
+					event=WebhookEvent(
+						session_id=payment_request.order_ref, status="Pending", sync_status=True
+					),
+					reference_docname=payment_request.name,
+				).name
+			)
+
+		payment_request.reload()
+		self.assertEqual(
+			(flt(payment_request.refund_amount), payment_request.status), (30, "Partially Refunded")
+		)
 
 	def test_a_sync_event_the_gateway_stops_answering_is_rolled_back_and_retried(self):
 		payment_request = make_payment_request(100, "SAR")

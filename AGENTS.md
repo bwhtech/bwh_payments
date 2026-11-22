@@ -134,7 +134,8 @@ An insert that is already settled is an import and fires neither.
    - **Webhook**: `webhook.handle` (guest POST, `?gateway=<profile>`, rate-limited) verifies the delivery,
      logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
      queues `process_webhook`. The job applies it as Administrator (a `sync_status` event runs
-     `sync_status` on a Pending request instead) with commits held, so a live client's request log cannot
+     `sync_status` on a Pending request instead, then `update_pending_refunds`, which also records refunds
+     `list_refunds` names) with commits held, so a live client's request log cannot
      drop the savepoint. A failure is rolled back to that
      savepoint, logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
      are raised as `RetryBackgroundJobError`, because Frappe's job runner does not retry the
