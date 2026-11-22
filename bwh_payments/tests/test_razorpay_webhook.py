@@ -1,6 +1,8 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # See license.txt
 
+from unittest.mock import patch
+
 import frappe
 from frappe.utils.data import flt
 from werkzeug.test import EnvironBuilder
@@ -14,12 +16,14 @@ from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_g
 	RazorpayTestCase,
 	make_razorpay_payment_request,
 )
+from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.razorpay.stub import (
 	StubRazorpayClient,
 	build_payment_link_event,
 	build_refund_event,
 	sign_payload,
 )
+from bwh_payments.testing import lose_next_refund_answer
 
 
 class TestRazorpayWebhookSpine(RazorpayTestCase):
@@ -186,6 +190,41 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 		self.assertIsNone(self.get_status_code())
 		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": "rfnd_stranger"}))
 
+	def test_a_refund_whose_answer_was_lost_is_settled_by_its_refund_event(self):
+		payment_request = self.make_paid_request()
+		lose_next_refund_answer()
+		with self.assertRaises(GatewayUnavailableError):
+			payment_request.create_refund(40)
+		[refund_id] = StubRazorpayClient.refunds
+
+		self.post_refund_event(
+			refund_id, payment_request.gateway_transaction_ref, "processed", 4000, "evt_rfnd_lost_answer"
+		)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual((refund.refund_id, refund.status), (refund_id, "Processed"))
+		self.assertEqual(len(StubRazorpayClient.created_refunds), 1)
+		payment_request.reload()
+		self.assertEqual(flt(payment_request.refund_amount), 40)
+
+	def test_a_refund_event_racing_an_unanswered_refund_is_handed_back_to_the_job_runner(self):
+		payment_request = self.make_paid_request()
+		frappe.get_doc(
+			{"doctype": "Gateway Refund", "payment_request": payment_request.name, "amount": 25}
+		).insert(ignore_permissions=True)
+
+		with (
+			patch.object(type(self.get_settings()), "idempotent_refunds", False),
+			self.assertRaises(frappe.RetryBackgroundJobError),
+		):
+			self.post_refund_event(
+				"rfnd_in_flight", payment_request.gateway_transaction_ref, "processed", 2500, "evt_rfnd_race"
+			)
+
+		log_status = frappe.db.get_value("Integration Request", {"request_id": "evt_rfnd_race"}, "status")
+		self.assertEqual(log_status, "Failed")
+		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": "rfnd_in_flight"}))
+
 	def test_a_refund_event_that_races_our_own_refund_is_retried_rather_than_counted_twice(self):
 		payment_request = self.make_paid_request()
 		# Our refund is reserved but the gateway has not answered yet, so it has no refund id.
@@ -199,7 +238,10 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 			transaction_ref=payment_request.gateway_transaction_ref,
 		)
 
-		with self.assertRaises(frappe.RetryBackgroundJobError):
+		with (
+			patch.object(type(self.get_settings()), "idempotent_refunds", False),
+			self.assertRaises(frappe.RetryBackgroundJobError),
+		):
 			webhook.apply_refund_event(payment_request, event)
 
 		self.assertFalse(frappe.db.exists("Gateway Refund", {"refund_id": "rfnd_in_flight"}))

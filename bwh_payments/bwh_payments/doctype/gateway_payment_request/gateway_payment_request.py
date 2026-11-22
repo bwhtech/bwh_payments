@@ -360,8 +360,7 @@ class GatewayPaymentRequest(Document):
 
 	def settle_pending_refunds(self, settings=None):
 		settings = settings or self.get_gateway_settings()
-		if settings.idempotent_refunds:
-			self.resend_unanswered_refunds(settings)
+		self.resend_unanswered_refunds(settings)
 		for name in frappe.get_all(
 			"Gateway Refund",
 			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "set"]},
@@ -372,8 +371,11 @@ class GatewayPaymentRequest(Document):
 			if result:
 				refund.apply_gateway_status(RefundResult.model_validate(result).status)
 
-	def resend_unanswered_refunds(self, settings):
+	def resend_unanswered_refunds(self, settings=None):
 		"""The same key makes the gateway return the refund it already made, or make it now."""
+		settings = settings or self.get_gateway_settings()
+		if not settings.idempotent_refunds:
+			return
 		for name in frappe.get_all(
 			"Gateway Refund",
 			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "not set"]},
@@ -384,20 +386,34 @@ class GatewayPaymentRequest(Document):
 
 	def record_unknown_refunds(self, settings):
 		"""Record refunds raised outside this app whose webhook never arrived."""
+		results = [
+			RefundResult.model_validate(result) for result in settings.list_refunds(self.order_ref) or []
+		]
+		# Under the lock, so a refund webhook recording the same refund meanwhile is seen here.
+		self.lock_row()
 		# One of our refunds still waiting for its id may be among them; recording it now would count it twice.
-		if frappe.db.exists(
-			"Gateway Refund",
-			{"payment_request": self.name, "refund_id": ["is", "not set"], "status": "Pending"},
-		):
+		if self.has_unanswered_refunds():
 			return
-
-		known = set(frappe.get_all("Gateway Refund", {"payment_request": self.name}, pluck="refund_id"))
-		for result in settings.list_refunds(self.order_ref) or []:
-			result = RefundResult.model_validate(result)
-			if result.refund_id and result.refund_id not in known:
+		for result in results:
+			if result.refund_id and not self.find_refund(result.refund_id):
 				self.record_external_refund(result.refund_id, result.amount).apply_gateway_status(
 					result.status
 				)
+
+	def find_refund(self, refund_id: str):
+		"""Locking reads, so a refund another worker recorded after this transaction's snapshot is found."""
+		name = frappe.db.get_value("Gateway Refund", {"refund_id": refund_id}, "name", for_update=True)
+		return frappe.get_doc("Gateway Refund", name, for_update=True) if name else None
+
+	def has_unanswered_refunds(self) -> bool:
+		return bool(
+			frappe.db.get_value(
+				"Gateway Refund",
+				{"payment_request": self.name, "refund_id": ["is", "not set"], "status": "Pending"},
+				"name",
+				for_update=True,
+			)
+		)
 
 	def record_external_refund(self, refund_id: str, amount: float):
 		"""Record a refund raised outside this app, e.g. from the gateway's dashboard."""
