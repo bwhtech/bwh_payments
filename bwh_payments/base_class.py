@@ -16,6 +16,15 @@ class CheckoutSession(GatewayResult):
 	failure_url: str | None = None
 
 
+class EmbeddedCheckout(GatewayResult):
+	"""A checkout the shopper completes on the caller's own page, through the gateway's browser script."""
+
+	session_id: str
+	script_url: str
+	# Handed to the script as they are.
+	options: dict
+
+
 class RefundResult(GatewayResult):
 	# All optional: read after money moved, so a thin result must not fail.
 	refund_id: str | None = None
@@ -79,6 +88,8 @@ class PaymentGatewayBase(ABC):
 	docs_url: str | None = None
 	# The checkout link stays payable after the shopper leaves it, so a caller can send them back to it.
 	reusable_checkout: bool = False
+	# The gateway can check out inside the caller's page: see `create_embedded_session`.
+	supports_embedded_checkout: bool = False
 
 	@abstractmethod
 	def create_session(
@@ -105,6 +116,24 @@ class PaymentGatewayBase(ABC):
 	@abstractmethod
 	def handle_webhook(self, payload: bytes, headers: dict) -> WebhookEvent | None:
 		"""Verify the signature, then return the event, or None to ignore the delivery."""
+
+	def create_embedded_session(
+		self,
+		amount: float,
+		currency: str,
+		reference: str | None = None,
+		customer: dict | None = None,
+		description: str | None = None,
+	) -> EmbeddedCheckout:
+		"""Only called when `supports_embedded_checkout` is set."""
+		raise NotImplementedError
+
+	def verify_embedded_payment(self, session_id: str, payload: dict) -> str:
+		"""Check what the browser script handed the page, then return a Gateway Payment Request `status`.
+
+		Raise `frappe.ValidationError` when the payload is not the gateway's own.
+		"""
+		raise NotImplementedError
 
 	def cancel_session(self, session_id: str) -> bool:
 		return False

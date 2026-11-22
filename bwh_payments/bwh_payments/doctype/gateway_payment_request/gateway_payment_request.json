@@ -10,6 +10,8 @@
   "column_break_tvtq",
   "order_ref",
   "order_url",
+  "checkout",
+  "checkout_options",
   "urls_section",
   "redirect_to",
   "success_url",
@@ -80,6 +82,21 @@
    "fieldname": "order_url",
    "fieldtype": "Small Text",
    "label": "Order URL",
+   "read_only": 1
+  },
+  {
+   "default": "Redirect",
+   "fieldname": "checkout",
+   "fieldtype": "Select",
+   "label": "Checkout",
+   "options": "Redirect\nEmbedded",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.checkout==\"Embedded\"",
+   "fieldname": "checkout_options",
+   "fieldtype": "JSON",
+   "label": "Checkout Options",
    "read_only": 1
   },
   {
@@ -279,7 +296,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-22 00:00:00.000000",
+ "modified": "2026-11-22 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "BWH Payments",
  "name": "Gateway Payment Request",

@@ -6,7 +6,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils.data import cstr, flt
 
-from bwh_payments.base_class import CheckoutSession, RefundResult
+from bwh_payments.base_class import CheckoutSession, EmbeddedCheckout, RefundResult
 from bwh_payments.bwh_payments.checkout import get_return_url
 from bwh_payments.bwh_payments.utils import is_local_path
 from bwh_payments.currency import get_minor_unit_exponent
@@ -26,6 +26,8 @@ class GatewayPaymentRequest(Document):
 
 		amount: DF.Currency
 		cancel_url: DF.Data | None
+		checkout: DF.Literal["Redirect", "Embedded"]
+		checkout_options: DF.JSON | None
 		company: DF.Link | None
 		currency_code: DF.Link
 		customer_address: DF.Link | None
@@ -108,8 +110,13 @@ class GatewayPaymentRequest(Document):
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
+		settings = self.get_gateway_settings()
+		if self.checkout == "Embedded" and settings.supports_embedded_checkout:
+			return self.create_embedded_session(settings)
+
+		self.checkout = "Redirect"
 		session = CheckoutSession.model_validate(
-			self.get_gateway_settings().create_session(
+			settings.create_session(
 				flt(self.amount),
 				self.currency_code,
 				reference=self.name,
@@ -122,6 +129,35 @@ class GatewayPaymentRequest(Document):
 		self.success_url = session.success_url
 		self.cancel_url = session.cancel_url
 		self.failure_url = session.failure_url
+
+	def create_embedded_session(self, settings):
+		session = EmbeddedCheckout.model_validate(
+			settings.create_embedded_session(
+				flt(self.amount),
+				self.currency_code,
+				reference=self.name,
+				customer=self.get_customer_details(),
+				description=self.description,
+			)
+		)
+		self.order_ref = session.session_id
+		self.checkout_options = frappe.as_json(session.model_dump(exclude={"session_id"}))
+
+	def get_embedded_checkout(self) -> EmbeddedCheckout:
+		self.validate_embedded_checkout()
+		return EmbeddedCheckout(session_id=self.order_ref, **frappe.parse_json(self.checkout_options))
+
+	def confirm_embedded_payment(self, payload: dict) -> str:
+		"""Apply what the embedded checkout handed the page, once the gateway vouches for it."""
+		self.validate_embedded_checkout()
+		if self.status == "Pending":
+			status = self.get_gateway_settings().verify_embedded_payment(self.order_ref, payload)
+			self.apply_webhook_status(status)
+		return self.status
+
+	def validate_embedded_checkout(self):
+		if self.checkout != "Embedded":
+			frappe.throw(_("Payment {0} is not an embedded checkout").format(self.name))
 
 	def get_optional_session_arguments(self) -> dict:
 		# Passed only when set, so gateways written before these arguments keep working.
