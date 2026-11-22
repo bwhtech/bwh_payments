@@ -16,6 +16,7 @@ from bwh_payments.currency import to_minor_units
 from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.stripe.base import StripeRefund
 from bwh_payments.services.stripe.stub import StubStripeClient
+from bwh_payments.testing import commit_elsewhere, reserve_refund_elsewhere
 
 GATEWAY = "Stripe Test Gateway"
 WEBHOOK_SECRET = "whsec_test_secret"
@@ -349,6 +350,37 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 		self.assertEqual((refund.status, refund.refund_id), ("Processed", refund_id))
 		payment_request.reload()
 		self.assertEqual(flt(payment_request.refund_amount), 40.0)
+
+	def take_snapshot(self, payment_request):
+		"""Commit, which frees the locks earlier tests hold, then read to take a new snapshot.
+
+		Committed rows, and refunds reserved elsewhere, go with `remove_stripe_gateway`.
+		"""
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+		payment_request.reload()
+
+	def test_a_refund_reserved_by_another_worker_after_this_snapshot_counts_against_the_balance(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		self.take_snapshot(payment_request)
+		reserve_refund_elsewhere(payment_request.name, 70)
+
+		with self.assertRaisesRegex(frappe.ValidationError, "exceeds the remaining refundable amount"):
+			payment_request.create_refund(70)
+		self.assertEqual(StubStripeClient.created_refunds, [])
+
+	def test_a_refund_another_worker_settled_after_this_snapshot_counts_against_the_balance(self):
+		payment_request = make_payment_request(100, "SAR")
+		self.mark_paid(payment_request)
+		self.take_snapshot(payment_request)
+		commit_elsewhere(
+			"update `tabGateway Payment Request` set refund_amount = 70, status = 'Partially Refunded'"
+			" where name = %s",
+			(payment_request.name,),
+		)
+
+		with self.assertRaisesRegex(frappe.ValidationError, "exceeds the remaining refundable amount"):
+			payment_request.create_refund(70)
 
 	def test_an_unanswered_refund_on_a_gateway_without_keys_fails(self):
 		payment_request = make_payment_request(100, "SAR")

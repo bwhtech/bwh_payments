@@ -10,7 +10,9 @@ from contextlib import contextmanager
 from functools import cache
 
 import frappe
+from frappe.database import get_db
 from frappe.query_builder import Field
+from frappe.utils import now_datetime
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
@@ -104,6 +106,52 @@ def remove_test_gateway(name: str = TEST_GATEWAY):
 	frappe.delete_doc(
 		"Payment Gateway Profile", name, ignore_missing=True, ignore_permissions=True, force=True
 	)
+
+
+@contextmanager
+def other_connection():
+	"""A second database session, as a concurrent worker holds. It sees only what is committed."""
+	conf = frappe.conf
+	database = get_db(
+		socket=conf.db_socket,
+		host=conf.db_host,
+		port=conf.db_port,
+		user=conf.db_user,
+		password=conf.db_password,
+		cur_db_name=conf.db_name,
+	)
+	database.connect()
+	try:
+		yield database
+	finally:
+		database.rollback()
+		database.close()
+
+
+def commit_elsewhere(query: str, values: tuple | dict | None = None):
+	"""Run `query` in another session and commit it, as a concurrent worker would.
+
+	A plain read in this session keeps its earlier snapshot and does not see the change.
+	"""
+	with other_connection() as database:
+		database.sql(query, values)
+		database.commit()
+
+
+def reserve_refund_elsewhere(payment_request: str, amount: float, reference: str | None = None) -> str:
+	"""A Pending refund another worker reserved and committed. Returns its name.
+
+	It outlives the test's rollback, so delete it once this session holds no lock on it.
+	"""
+	name = frappe.generate_hash(length=10)
+	now = now_datetime()
+	commit_elsewhere(
+		"""insert into `tabGateway Refund` (name, creation, modified, owner, modified_by, docstatus,
+		payment_request, amount, reference, status) values (%s, %s, %s, 'Administrator', 'Administrator',
+		0, %s, %s, %s, 'Pending')""",
+		(name, now, now, payment_request, amount, reference),
+	)
+	return name
 
 
 def pay(payment_request: str, payment_method: str = "upi"):

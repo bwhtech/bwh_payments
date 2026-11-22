@@ -107,6 +107,20 @@ def without_commits():
 		frappe.db._disable_transaction_control -= 1
 
 
+def reload_for_update(doc):
+	"""Lock the row and load what is committed now.
+
+	A plain read keeps the transaction's first snapshot under REPEATABLE READ, so values another worker
+	committed since would stay hidden. A locking read is a current read.
+	"""
+	for_update = doc.flags.for_update
+	doc.flags.for_update = True
+	try:
+		doc.reload()
+	finally:
+		doc.flags.for_update = for_update
+
+
 def is_local_path(url: str | None) -> bool:
 	"""A path on this site. Browsers read `//host` and `/\\host` as another site."""
 	if not url or not url.startswith("/") or url.startswith(("//", "/\\")):

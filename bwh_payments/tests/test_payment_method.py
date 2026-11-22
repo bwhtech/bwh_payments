@@ -1,8 +1,6 @@
-from contextlib import contextmanager
 from unittest.mock import patch
 
 import frappe
-from frappe.database import get_db
 
 from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_gateway_settings import (
 	RazorpayTestCase,
@@ -10,6 +8,7 @@ from bwh_payments.bwh_payments.doctype.razorpay_gateway_settings.test_razorpay_g
 )
 from bwh_payments.services.razorpay.live import log_request
 from bwh_payments.services.razorpay.stub import StubRazorpayClient
+from bwh_payments.testing import other_connection
 
 # A GET /payments/{id} response as Razorpay sends it, trimmed of fields nobody reads.
 CARD_PAYMENT = {
@@ -46,26 +45,6 @@ CARD_PAYMENT = {
 def recorded_payment(method: str, **fields) -> dict:
 	payment = {key: value for key, value in CARD_PAYMENT.items() if key not in ("card", "card_id")}
 	return {**payment, "method": method, **fields}
-
-
-@contextmanager
-def other_connection():
-	"""A second database session, as a concurrent worker would hold."""
-	conf = frappe.conf
-	database = get_db(
-		socket=conf.db_socket,
-		host=conf.db_host,
-		port=conf.db_port,
-		user=conf.db_user,
-		password=conf.db_password,
-		cur_db_name=conf.db_name,
-	)
-	database.connect()
-	try:
-		yield database
-	finally:
-		database.rollback()
-		database.close()
 
 
 def is_locked_elsewhere(doctype: str, name: str) -> bool:

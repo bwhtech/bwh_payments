@@ -7,6 +7,7 @@ from frappe.model.document import Document
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import RefundResult
+from bwh_payments.bwh_payments.utils import reload_for_update
 
 REFUND_STATUS_MAP = {
 	"succeeded": "Processed",
@@ -66,8 +67,7 @@ class GatewayRefund(Document):
 		)
 
 	def lock_row(self):
-		frappe.db.get_value("Gateway Refund", self.name, "status", for_update=True)
-		self.reload()
+		reload_for_update(self)
 
 	def apply_gateway_result(self, result: RefundResult):
 		self.refund_id = result.refund_id or self.refund_id

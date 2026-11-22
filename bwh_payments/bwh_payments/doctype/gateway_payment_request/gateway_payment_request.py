@@ -8,7 +8,7 @@ from frappe.utils.data import cstr, flt
 
 from bwh_payments.base_class import CheckoutSession, EmbeddedCheckout, RefundResult
 from bwh_payments.bwh_payments.checkout import get_return_url
-from bwh_payments.bwh_payments.utils import is_local_path, without_commits
+from bwh_payments.bwh_payments.utils import is_local_path, reload_for_update, without_commits
 from bwh_payments.currency import get_minor_unit_exponent
 from bwh_payments.services import GatewayUnavailableError
 
@@ -254,8 +254,13 @@ class GatewayPaymentRequest(Document):
 		return flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
 
 	def get_pending_refund_amount(self) -> float:
-		pending = frappe.get_all(
-			"Gateway Refund", filters={"payment_request": self.name, "status": "Pending"}, pluck="amount"
+		"""A locking read, so a refund another worker reserved after this transaction's snapshot counts."""
+		pending = frappe.db.get_values(
+			"Gateway Refund",
+			{"payment_request": self.name, "status": "Pending"},
+			"amount",
+			for_update=True,
+			pluck=True,
 		)
 		return sum(flt(amount) for amount in pending)
 
@@ -269,14 +274,8 @@ class GatewayPaymentRequest(Document):
 		return "Partially Refunded"
 
 	def lock_row(self):
-		"""Row lock plus reload, so concurrent refunds cannot both pass the over-refund guard."""
-		frappe.db.get_value(
-			"Gateway Payment Request",
-			self.name,
-			["amount", "refund_amount", "status"],
-			for_update=True,
-		)
-		self.reload()
+		"""Concurrent refunds and settlements wait here, then see what the other one committed."""
+		reload_for_update(self)
 
 	def refund(self, amount: float | None = None, payment_entry: str | None = None) -> dict:
 		self.create_refund(amount, payment_entry=payment_entry)
@@ -412,9 +411,12 @@ class GatewayPaymentRequest(Document):
 
 	def get_refund_for_payment_entry(self, payment_entry: str):
 		name = frappe.db.get_value(
-			"Gateway Refund", {"payment_entry": payment_entry, "status": ["!=", "Failed"]}, "name"
+			"Gateway Refund",
+			{"payment_entry": payment_entry, "status": ["!=", "Failed"]},
+			"name",
+			for_update=True,
 		)
-		return frappe.get_doc("Gateway Refund", name) if name else None
+		return frappe.get_doc("Gateway Refund", name, for_update=True) if name else None
 
 	def add_processed_refund(self, refund):
 		self.lock_row()
