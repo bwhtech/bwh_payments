@@ -46,6 +46,9 @@ keeps working: `cancel_session` (False), `get_transaction_ref` (the settled paym
 the unknown ones), `supported_currencies` (None = any), and the `logo` /
 `logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
 the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url` and `description`, each passed only when set.
+`idempotent_refunds` means `refund_payment` takes `idempotency_key` (the Gateway Refund's name), and the
+same key always names the same refund. Only such a gateway gets the key, so other gateways keep their old
+signature.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
 carries `session_id` and, when only the webhook names the settled payment, `transaction_ref`; a refund
 event `refund_id`, `refund_amount` and `transaction_ref`; a payment event with `sync_status` makes the
@@ -138,17 +141,45 @@ An insert that is already settled is an import and fires neither.
      to `redirect_to`. Never trust the browser redirect itself.
    - **Pull**: whitelisted `sync_status` asks the gateway, and only while the request is Pending, because
      asking may capture.
+   - **Embedded**: see [Embedded checkout](#embedded-checkout).
 4. `create_refund(amount=None, reference=None, payment_entry=None)` checks the amount under the row lock,
    inserts a **Gateway Refund** as `Pending` and commits it before calling the gateway, so the reservation
    holds once the lock is gone (Pending refunds count against what is left). The gateway's answer is
    normalised to `Pending` / `Processed` / `Failed`; a refusal is kept as `Failed` with its error. Only a
-   `Processed` refund adds to `refund_amount` and sets `Partially Refunded` / `Refunded`. Pending refunds
+   `Processed` refund adds to `refund_amount` and sets `Partially Refunded` / `Refunded`. On a gateway with
+   `idempotent_refunds`, a `GatewayUnavailableError` (no answer, so the outcome is unknown) keeps the refund
+   `Pending` without a `refund_id`, its amount still reserved. `sync_refunds` and a sync webhook send it again
+   with the same key, which returns the refund the gateway already made, or makes it now. Pending refunds
    settle by refund webhook or `sync_refunds`; a refund raised on the gateway's dashboard arrives by
    webhook and is found through `gateway_transaction_ref`. `refund()` and `release_if_unpaid()` are not
    whitelisted: Frappe's `run_doc_method` checks only read permission.
 5. ERPNext bridge (`hooks.py` `doc_events`): submitting a `Payment Entry` with `payment_type = "Pay"`,
    `reference_no` = `order_ref` and `mode_of_payment` = the gateway profile name refunds through the
    gateway. Amended entries are traced back via `amended_from` so a refund is never sent twice.
+
+### Embedded checkout
+
+A caller whose page should open the gateway's own dialog, rather than leave the site, asks
+`create_payment(..., checkout="embedded")`. Only a gateway with `supports_embedded_checkout` (Razorpay, on
+an Order) does so; every other gateway falls back to a redirect, so read the request's `checkout` before
+choosing what the page shows.
+
+1. `create_embedded_session(amount, currency, reference, customer, description)` returns an
+   `EmbeddedCheckout`: `session_id` (stored as `order_ref`), the gateway's `script_url`, and `options` for
+   that script. The request keeps them in `checkout_options`; there is no `order_url`.
+2. The caller's page loads `script_url` and opens it with `get_embedded_checkout().options`, as they are.
+   Razorpay's options are the public key, order id, amount in minor units, currency, name, description and
+   the customer prefill: nothing secret.
+3. What the script hands back (Razorpay: `razorpay_payment_id`, `razorpay_order_id`, `razorpay_signature`)
+   goes to the caller's own endpoint, which calls `api.confirm_embedded_payment(payment_request, payload)`.
+   `verify_embedded_payment` checks it against our own `order_ref` (never the order id the browser sends),
+   then asks the gateway for the status; a payload that is not the gateway's own raises
+   `frappe.ValidationError`. The status is applied under the row lock, and the request's status is returned.
+4. A shopper who closes the dialog has not paid; the request stays `Pending`. The webhook (`order.paid`,
+   `payment.captured` on Razorpay) and `sync_status` still settle a payment the page never confirmed.
+
+`testing.complete_embedded_checkout(payment_request, payment_method)` plays the shopper paying and returns
+the payload the script would hand the page.
 
 ### Gateway-specific behavior worth knowing
 
