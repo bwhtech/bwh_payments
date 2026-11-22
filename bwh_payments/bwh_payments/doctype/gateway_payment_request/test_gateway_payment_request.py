@@ -319,7 +319,7 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 			payment_request.update_pending_refunds()
 		return refund_payment
 
-	def test_an_idempotent_gateway_is_sent_the_refund_name_as_its_key(self):
+	def test_an_idempotent_gateway_is_sent_the_refund_name_as_its_key_and_the_payment_id(self):
 		payment_request = make_payment_request(100, "SAR")
 		self.mark_paid(payment_request)
 
@@ -329,7 +329,11 @@ class TestGatewayPaymentRequest(IntegrationTestCase):
 
 		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
 		refund_payment.assert_called_once_with(
-			payment_request.order_ref, 40.0, "SAR", idempotency_key=refund.name
+			payment_request.order_ref,
+			40.0,
+			"SAR",
+			idempotency_key=refund.name,
+			transaction_ref=payment_request.gateway_transaction_ref,
 		)
 
 	def test_an_unanswered_idempotent_refund_stays_reserved_and_is_sent_again_with_its_key(self):

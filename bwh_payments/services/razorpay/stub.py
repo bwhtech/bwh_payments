@@ -25,6 +25,8 @@ class StubRazorpayClient(BaseRazorpayClient):
 	order_payments: ClassVar[dict[str, list[RazorpayPayment]]] = {}
 	# GET /payments/{id} responses, by payment id.
 	payments: ClassVar[dict[str, dict]] = {}
+	# Minor units, by payment link or order.
+	session_amounts: ClassVar[dict[str, int]] = {}
 	created_links: ClassVar[list[dict]] = []
 	created_orders: ClassVar[list[dict]] = []
 	created_refunds: ClassVar[list[dict]] = []
@@ -40,6 +42,7 @@ class StubRazorpayClient(BaseRazorpayClient):
 		cls.orders = {}
 		cls.order_payments = {}
 		cls.payments = {}
+		cls.session_amounts = {}
 		cls.created_links = []
 		cls.created_orders = []
 		cls.created_refunds = []
@@ -66,6 +69,7 @@ class StubRazorpayClient(BaseRazorpayClient):
 		order_id = f"order_{frappe.generate_hash(length=12)}"
 		cls.orders[order_id] = RazorpayOrder(id=order_id, status="created", amount=amount, currency=currency)
 		cls.order_payments[order_id] = []
+		cls.session_amounts[order_id] = amount
 		return order_id
 
 	@classmethod
@@ -81,8 +85,32 @@ class StubRazorpayClient(BaseRazorpayClient):
 		if payments is None:
 			payments = cls.links[session_id].payments
 		payments.append(RazorpayPayment(payment_id=payment_id, status=status))
-		cls.payments[payment_id] = {"method": "upi", **(response or {}), "id": payment_id, "status": status}
+		cls.payments[payment_id] = {
+			"method": "upi",
+			**(response or {}),
+			"id": payment_id,
+			"status": status,
+			"amount": cls.session_amounts.get(session_id),
+		}
 		return payment_id
+
+	@classmethod
+	def set_payment_status(cls, payment_id: str, status: str):
+		cls.payments[payment_id]["status"] = status
+		for payments in [*cls.order_payments.values(), *(link.payments or [] for link in cls.links.values())]:
+			for payment in payments:
+				if payment.payment_id == payment_id:
+					payment.status = status
+
+	@classmethod
+	def mark_refunded_when_nothing_is_left(cls, payment_id: str):
+		"""As Razorpay does, a payment refunded in full reads `refunded` instead of `captured`."""
+		amount = (cls.payments.get(payment_id) or {}).get("amount")
+		refunded = sum(
+			refund["amount"] for refund in cls.created_refunds if refund["payment_id"] == payment_id
+		)
+		if amount and refunded >= amount:
+			cls.set_payment_status(payment_id, "refunded")
 
 	@classmethod
 	def pay(cls, session_id: str, response: dict | None = None) -> str:
@@ -92,7 +120,9 @@ class StubRazorpayClient(BaseRazorpayClient):
 
 	def create_payment_link(self, payload: dict) -> RazorpayPaymentLink:
 		self.created_links.append(payload)
-		return self.get_payment_link(self.add_link())
+		link_id = self.add_link()
+		self.session_amounts[link_id] = payload.get("amount")
+		return self.get_payment_link(link_id)
 
 	def get_payment_link(self, link_id: str) -> RazorpayPaymentLink:
 		if link_id not in self.links:
@@ -140,6 +170,7 @@ class StubRazorpayClient(BaseRazorpayClient):
 			id=f"rfnd_{frappe.generate_hash(length=12)}", status=self.next_refund_status, amount=amount
 		)
 		self.refunds[refund.id] = refund
+		self.mark_refunded_when_nothing_is_left(payment_id)
 		if idempotency_key:
 			self.refund_keys[idempotency_key] = refund.id
 		if self.lose_next_refund_answer:

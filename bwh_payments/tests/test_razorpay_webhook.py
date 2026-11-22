@@ -207,6 +207,23 @@ class TestRazorpayWebhookSpine(RazorpayTestCase):
 		payment_request.reload()
 		self.assertEqual(flt(payment_request.refund_amount), 40)
 
+	def test_a_full_refund_whose_answer_was_lost_is_settled_by_its_refund_event(self):
+		payment_request = self.make_paid_request(100)
+		lose_next_refund_answer()
+		with self.assertRaises(GatewayUnavailableError):
+			payment_request.create_refund(100)
+		[refund_id] = StubRazorpayClient.refunds
+
+		self.post_refund_event(
+			refund_id, payment_request.gateway_transaction_ref, "processed", 10000, "evt_rfnd_lost_full"
+		)
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual((refund.refund_id, refund.status), (refund_id, "Processed"))
+		self.assertEqual(len(StubRazorpayClient.created_refunds), 1)
+		payment_request.reload()
+		self.assertEqual((flt(payment_request.refund_amount), payment_request.status), (100, "Refunded"))
+
 	def test_a_refund_event_racing_an_unanswered_refund_is_handed_back_to_the_job_runner(self):
 		payment_request = self.make_paid_request()
 		frappe.get_doc(

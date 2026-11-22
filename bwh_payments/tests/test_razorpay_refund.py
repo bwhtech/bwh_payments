@@ -101,3 +101,20 @@ class TestRazorpayLostRefundAnswer(RazorpayTestCase):
 		self.assertEqual(list(StubRazorpayClient.refunds), [refund.refund_id])
 		payment_request.reload()
 		self.assertEqual(flt(payment_request.refund_amount), 200)
+
+	def test_a_full_refund_whose_answer_was_lost_is_made_once_when_synced(self):
+		payment_request = self.paid_request(1000)
+		lose_next_refund_answer()
+		with self.assertRaises(GatewayUnavailableError):
+			payment_request.create_refund(1000)
+		self.assertEqual(
+			StubRazorpayClient.payments[payment_request.gateway_transaction_ref]["status"], "refunded"
+		)
+
+		payment_request.update_pending_refunds()
+
+		refund = frappe.get_last_doc("Gateway Refund", {"payment_request": payment_request.name})
+		self.assertEqual(len(StubRazorpayClient.created_refunds), 1)
+		self.assertEqual(refund.status, "Processed")
+		payment_request.reload()
+		self.assertEqual((flt(payment_request.refund_amount), payment_request.status), (1000, "Refunded"))

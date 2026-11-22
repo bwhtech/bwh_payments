@@ -43,6 +43,8 @@ RAZORPAY_CARD_TYPES = ("credit", "debit")
 RAZORPAY_AUTHORISED_STATUS = "authorized"
 RAZORPAY_CANCELLED_STATUS = "cancelled"
 RAZORPAY_CAPTURED_STATUS = "captured"
+# A payment refunded in full reads `refunded`, and a refund resent with its key must still find it.
+RAZORPAY_REFUNDABLE_PAYMENT_STATUSES = (RAZORPAY_CAPTURED_STATUS, "refunded")
 RAZORPAY_PAID_EVENT = "payment_link.paid"
 RAZORPAY_ORDER_EVENTS = ("order.paid", "payment.captured")
 RAZORPAY_PAID_ORDER_STATUS = "paid"
@@ -300,6 +302,11 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 			return client.get_order_payments(session_id)
 		return client.get_payment_link(session_id).payments or []
 
+	def find_refundable_payment_id(self, session_id: str) -> str:
+		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
+			return session_id
+		return get_refundable_payment_id(self.get_session_payments(session_id))
+
 	def find_payment_id(self, session_id: str) -> str | None:
 		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
 			return session_id
@@ -311,13 +318,10 @@ class RazorpayGatewaySettings(Document, PaymentGatewayBase):
 		amount: float,
 		currency: str | None = None,
 		idempotency_key: str | None = None,
+		transaction_ref: str | None = None,
 	) -> RefundResult:
 		currency = currency or self.currency
-		if session_id.startswith(RAZORPAY_PAYMENT_ID_PREFIX):
-			payment_id = session_id
-		else:
-			payment_id = get_captured_payment_id(self.get_session_payments(session_id))
-
+		payment_id = transaction_ref or self.find_refundable_payment_id(session_id)
 		refund = self.get_client().create_refund(
 			payment_id, to_minor_units(amount, currency), idempotency_key=idempotency_key
 		)
@@ -387,9 +391,9 @@ def has_authorised_payment(payments: list[RazorpayPayment] | None) -> bool:
 	)
 
 
-def get_captured_payment_id(payments: list[RazorpayPayment]) -> str:
+def get_refundable_payment_id(payments: list[RazorpayPayment]) -> str:
 	for payment in payments:
-		if (payment.status or "").strip().casefold() == RAZORPAY_CAPTURED_STATUS:
+		if (payment.status or "").strip().casefold() in RAZORPAY_REFUNDABLE_PAYMENT_STATUSES:
 			return payment.payment_id
 
 	frappe.throw(

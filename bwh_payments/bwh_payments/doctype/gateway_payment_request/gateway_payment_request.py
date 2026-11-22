@@ -342,7 +342,9 @@ class GatewayPaymentRequest(Document):
 		return refund
 
 	def send_refund(self, settings, refund) -> RefundResult:
-		keywords = {"idempotency_key": refund.name} if settings.idempotent_refunds else {}
+		keywords = {}
+		if settings.idempotent_refunds:
+			keywords = {"idempotency_key": refund.name, "transaction_ref": self.gateway_transaction_ref}
 		result = settings.refund_payment(self.order_ref, flt(refund.amount), self.currency_code, **keywords)
 		return RefundResult.model_validate(result or {})
 
