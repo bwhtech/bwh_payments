@@ -46,9 +46,10 @@ keeps working: `cancel_session` (False), `get_transaction_ref` (the settled paym
 the unknown ones), `supported_currencies` (None = any), and the `logo` /
 `logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
 the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url` and `description`, each passed only when set.
-`idempotent_refunds` means `refund_payment` takes `idempotency_key` (the Gateway Refund's name), and the
-same key always names the same refund. Only such a gateway gets the key, so other gateways keep their old
-signature.
+`idempotent_refunds` means `refund_payment` takes `idempotency_key` (the Gateway Refund's name) and
+`transaction_ref` (the request's `gateway_transaction_ref`), and the same key always names the same refund.
+Only such a gateway gets them, so other gateways keep their old signature. Such a gateway raises
+`services.GatewayRefusedError` only when it answered no.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
 carries `session_id` and, when only the webhook names the settled payment, `transaction_ref`; a refund
 event `refund_id`, `refund_amount` and `transaction_ref`; a payment event with `sync_status` makes the
@@ -150,9 +151,11 @@ An insert that is already settled is an import and fires neither.
    holds once the lock is gone (Pending refunds count against what is left). The gateway's answer is
    normalised to `Pending` / `Processed` / `Failed`; a refusal is kept as `Failed` with its error. Only a
    `Processed` refund adds to `refund_amount` and sets `Partially Refunded` / `Refunded`. On a gateway with
-   `idempotent_refunds`, a `GatewayUnavailableError` (no answer, so the outcome is unknown) keeps the refund
-   `Pending` without a `refund_id`, its amount still reserved. `sync_refunds` and a sync webhook send it again
-   with the same key, which returns the refund the gateway already made, or makes it now. Pending refunds
+   `idempotent_refunds`, only a `GatewayRefusedError` fails the refund (`is_refusal`). Any other error, such
+   as no answer, an unreadable answer or a failed log write, may come after the gateway made the refund, so
+   it stays `Pending` without a `refund_id`, its amount still reserved. `sync_refunds`, a sync webhook and a
+   refund webhook send it again with the same key, which returns the refund the gateway already made, or
+   makes it now. A refusal of that resend fails the refund, unless another worker settled it first. Pending refunds
    settle by refund webhook or `sync_refunds`; a refund raised on the gateway's dashboard arrives by
    webhook and is found through `gateway_transaction_ref`. `refund()` and `release_if_unpaid()` are not
    whitelisted: Frappe's `run_doc_method` checks only read permission.
@@ -195,7 +198,8 @@ the payload the script would hand the page.
   `refund.failed`. A session id starting `pay_` is a payment imported from before Payment Links and is
   refunded directly. Refunds are `idempotent_refunds`: the key goes in the `X-Refund-Idempotency` header.
   A timeout, a dropped connection, a 5xx, a 429 or a 409 (the same key still in progress) is a
-  `GatewayUnavailableError`.
+  `GatewayUnavailableError`; another 4xx is a `GatewayRefusedError`. A refund goes to the stored payment id,
+  since a payment refunded in full reads `refunded`, not `captured`.
 - **Telr**: no signed webhook. `handle_webhook` returns `None` on purpose; status comes only from
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.
