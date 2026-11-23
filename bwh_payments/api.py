@@ -20,6 +20,7 @@ from bwh_payments.currency import from_minor_units, to_minor_units, validate_tra
 __all__ = [
 	"GatewayInfo",
 	"GatewayOption",
+	"confirm_embedded_payment",
 	"create_payment",
 	"from_minor_units",
 	"get_gateway_options",
@@ -37,17 +38,34 @@ __all__ = [
 get_payment_gateways = get_available_payment_modes
 
 
+CHECKOUT_MODES = {"redirect": "Redirect", "embedded": "Embedded"}
+
+
 def create_payment(
-	ref_doctype: str, ref_docname: str, amount: float, currency: str, gateway: str, **fields
+	ref_doctype: str,
+	ref_docname: str,
+	amount: float,
+	currency: str,
+	gateway: str,
+	checkout: str = "redirect",
+	**fields,
 ) -> GatewayPaymentRequest:
 	"""Send the shopper to the returned request's `order_url`. The referenced document's
 	`on_payment_authorized(status)` runs once the payment is Paid.
 
 	With `redirect_to` (a path on this site), the gateway returns the shopper through
 	`checkout.return_from_gateway`, which confirms the payment before redirecting there.
+	A `description` is shown at the checkout by gateways that support one.
+
+	With `checkout="embedded"`, a gateway that can check out inside the caller's page does so: the
+	request's `checkout` is then "Embedded", `get_embedded_checkout()` gives the page its script and
+	options, and `confirm_embedded_payment` takes what the script hands back. Any other gateway
+	falls back to a redirect.
 	"""
+	if checkout not in CHECKOUT_MODES:
+		frappe.throw(_("Checkout must be one of {0}").format(", ".join(CHECKOUT_MODES)))
 	# The insert skips permissions, so user input must not reach status or the ledger.
-	allowed = ("company", "redirect_to")
+	allowed = ("company", "redirect_to", "description")
 	if blocked := [field for field in fields if field not in allowed and not field.startswith("customer_")]:
 		frappe.throw(_("create_payment cannot set {0}").format(", ".join(sorted(blocked))))
 
@@ -59,9 +77,15 @@ def create_payment(
 			"amount": amount,
 			"currency_code": currency,
 			"gateway": gateway,
+			"checkout": CHECKOUT_MODES[checkout],
 			**fields,
 		}
 	).insert(ignore_permissions=True)
+
+
+def confirm_embedded_payment(payment_request: str, payload: dict) -> str:
+	"""Verify what the embedded checkout handed the page, and return the request's status."""
+	return frappe.get_doc("Gateway Payment Request", payment_request).confirm_embedded_payment(payload)
 
 
 def get_gateway_options(currency: str | None = None) -> list[GatewayOption]:

@@ -7,6 +7,7 @@ from frappe.model.document import Document
 from frappe.utils.data import flt
 
 from bwh_payments.base_class import RefundResult
+from bwh_payments.bwh_payments.utils import reload_for_update
 
 REFUND_STATUS_MAP = {
 	"succeeded": "Processed",
@@ -66,10 +67,15 @@ class GatewayRefund(Document):
 		)
 
 	def lock_row(self):
-		frappe.db.get_value("Gateway Refund", self.name, "status", for_update=True)
-		self.reload()
+		# The payment request first, as every refund path locks them, so two workers cannot deadlock.
+		frappe.db.get_value("Gateway Payment Request", self.payment_request, "name", for_update=True)
+		reload_for_update(self)
 
 	def apply_gateway_result(self, result: RefundResult):
+		"""A refund another worker settled meanwhile keeps that outcome."""
+		self.lock_row()
+		if self.status != "Pending":
+			return
 		self.refund_id = result.refund_id or self.refund_id
 		self.status = normalise_refund_status(result.status)
 		self.save(ignore_permissions=True)
@@ -89,7 +95,12 @@ class GatewayRefund(Document):
 		self.save(ignore_permissions=True)
 		return True
 
-	def mark_failed(self, error: str):
+	def mark_failed(self, error: str) -> bool:
+		"""A refund another worker settled meanwhile keeps that outcome."""
+		self.lock_row()
+		if self.status != "Pending":
+			return False
 		self.status = "Failed"
 		self.error = error
 		self.save(ignore_permissions=True)
+		return True

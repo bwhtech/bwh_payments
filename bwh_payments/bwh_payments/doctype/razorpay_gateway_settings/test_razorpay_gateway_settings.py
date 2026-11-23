@@ -367,7 +367,15 @@ class TestRazorpayGatewaySettings(RazorpayTestCase):
 
 		self.assertEqual(StubRazorpayClient.created_refunds, [])
 
-	def test_a_refund_throws_when_the_gateway_reports_an_unaccepted_status(self):
+	def test_a_refund_razorpay_reads_without_a_status_stays_pending(self):
+		link_id = StubRazorpayClient.add_link("paid")
+		StubRazorpayClient.add_payment(link_id, "captured")
+		StubRazorpayClient.next_refund_status = None
+		refund = self.get_settings().refund_payment(link_id, 100, "INR")
+
+		self.assertEqual(self.get_settings().get_refund_status(link_id, refund.refund_id).status, "pending")
+
+	def test_a_refund_throws_when_the_gateway_reports_it_failed(self):
 		link_id = StubRazorpayClient.add_link("paid")
 		StubRazorpayClient.add_payment(link_id, "captured")
 		StubRazorpayClient.next_refund_status = "failed"

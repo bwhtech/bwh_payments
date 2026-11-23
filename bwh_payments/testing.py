@@ -8,18 +8,23 @@ wrap the test class in `without_commits()`, or call `remove_test_gateway()` afte
 import atexit
 from contextlib import contextmanager
 from functools import cache
+from unittest.mock import patch
 
 import frappe
+from frappe.database import get_db
+from frappe.database.database import Database
 from frappe.query_builder import Field
+from frappe.utils import now_datetime
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
 from bwh_payments.bwh_payments import webhook
-from bwh_payments.bwh_payments.utils import run_as_administrator
+from bwh_payments.bwh_payments.utils import run_as_administrator, without_commits
 from bwh_payments.currency import to_minor_units
 from bwh_payments.services.razorpay.stub import (  # nosemgrep: frappe-monkey-patching-not-allowed
 	StubRazorpayClient,
 	build_refund_event,
+	sign_checkout_payment,
 	sign_payload,
 )
 
@@ -27,19 +32,16 @@ TEST_GATEWAY = "Test Gateway"
 SETTINGS = "Razorpay Gateway Settings"
 WEBHOOK_SECRET = "bwh_payments_test_webhook_secret"
 REFUND_STATUSES = {"Pending": "pending", "Processed": "processed", "Failed": "failed"}
-
-
-@contextmanager
-def without_commits():
-	"""Turn commits into no-ops, so the test's own rollback also undoes refunds and webhook logs.
-
-	Leave it before the class rollback runs: inside it, rollback is a no-op too.
-	"""
-	frappe.db._disable_transaction_control += 1
-	try:
-		yield
-	finally:
-		frappe.db._disable_transaction_control -= 1
+# What GET /payments/{id} says for each payment method a caller can ask `pay` for.
+PAYMENT_METHOD_RESPONSES = {
+	"upi": {"method": "upi"},
+	"card_credit": {"method": "card", "card": {"type": "credit"}},
+	"card_debit": {"method": "card", "card": {"type": "debit"}},
+	"netbanking": {"method": "netbanking"},
+	"wallet": {"method": "wallet"},
+	"emi": {"method": "emi"},
+	"paylater": {"method": "paylater"},
+}
 
 
 def reset():
@@ -108,17 +110,110 @@ def remove_test_gateway(name: str = TEST_GATEWAY):
 	)
 
 
-def pay(payment_request: str):
-	"""The shopper pays, and the payment is confirmed as it would be on their return."""
+@contextmanager
+def other_connection():
+	"""A second database session, as a concurrent worker holds. It sees only what is committed."""
+	conf = frappe.conf
+	database = get_db(
+		socket=conf.db_socket,
+		host=conf.db_host,
+		port=conf.db_port,
+		user=conf.db_user,
+		password=conf.db_password,
+		cur_db_name=conf.db_name,
+	)
+	database.connect()
+	try:
+		yield database
+	finally:
+		database.rollback()
+		database.close()
+
+
+def commit_elsewhere(query: str, values: tuple | dict | None = None):
+	"""Run `query` in another session and commit it, as a concurrent worker would.
+
+	A plain read in this session keeps its earlier snapshot and does not see the change.
+	"""
+	with other_connection() as database:
+		database.sql(query, values)
+		database.commit()
+
+
+@contextmanager
+def snapshot_isolation(enabled: bool):
+	"""MariaDB's `innodb_snapshot_isolation` on this session and on every connection opened meanwhile.
+
+	MariaDB 11.8 has it ON by default. Then a locking read of a row another worker changed after this
+	transaction's first read fails the transaction (`QueryDeadlockError`, 1020) and rolls it back, instead
+	of reading the newest row. Other connections include `other_connection` and a thread's `frappe.connect`.
+
+	This session is also set to Frappe's REPEATABLE READ, from its next transaction: the race tests need a
+	snapshot, and code under test may leave the session at READ COMMITTED.
+	"""
+	value = "ON" if enabled else "OFF"
+	original_connect = Database.connect
+
+	def connect(database):
+		original_connect(database)
+		database.sql("set session innodb_snapshot_isolation = %s", (value,))
+
+	previous = frappe.db.sql("select @@session.innodb_snapshot_isolation, @@session.tx_isolation")[0]
+	frappe.db.sql("set session innodb_snapshot_isolation = %s", (value,))
+	frappe.db.sql("set session tx_isolation = 'REPEATABLE-READ'")
+	try:
+		with patch.object(Database, "connect", connect):
+			yield
+	finally:
+		frappe.db.sql("set session innodb_snapshot_isolation = %s, tx_isolation = %s", previous)
+
+
+def reserve_refund_elsewhere(payment_request: str, amount: float, reference: str | None = None) -> str:
+	"""A Pending refund another worker reserved and committed. Returns its name.
+
+	It outlives the test's rollback, so delete it once this session holds no lock on it.
+	"""
+	name = frappe.generate_hash(length=10)
+	now = now_datetime()
+	commit_elsewhere(
+		"""insert into `tabGateway Refund` (name, creation, modified, owner, modified_by, docstatus,
+		payment_request, amount, reference, status) values (%s, %s, %s, 'Administrator', 'Administrator',
+		0, %s, %s, %s, 'Pending')""",
+		(name, now, now, payment_request, amount, reference),
+	)
+	return name
+
+
+def pay(payment_request: str, payment_method: str = "upi"):
+	"""The shopper pays with `payment_method` (a PAYMENT_METHOD_RESPONSES key), and the payment is
+	confirmed as it would be on their return."""
 	doc = frappe.get_doc("Gateway Payment Request", payment_request)
-	StubRazorpayClient.pay(doc.order_ref)
+	StubRazorpayClient.pay(doc.order_ref, PAYMENT_METHOD_RESPONSES[payment_method])
 	with run_as_administrator():
 		doc.sync_status()
+
+
+def complete_embedded_checkout(payment_request: str, payment_method: str = "upi") -> dict:
+	"""The shopper pays in an embedded checkout. Returns what the checkout script hands the page,
+	for `api.confirm_embedded_payment` or the caller's own endpoint that calls it."""
+	order_id = frappe.db.get_value("Gateway Payment Request", payment_request, "order_ref")
+	payment_id = StubRazorpayClient.pay(order_id, PAYMENT_METHOD_RESPONSES[payment_method])
+	key_secret = frappe.get_single(SETTINGS).get_password("key_secret")
+	return {
+		"razorpay_payment_id": payment_id,
+		"razorpay_order_id": order_id,
+		"razorpay_signature": sign_checkout_payment(order_id, payment_id, key_secret),
+	}
 
 
 def set_next_refund_status(status: str):
 	"""How the gateway answers the next refund: "Pending", "Processed" or "Failed" (refused)."""
 	StubRazorpayClient.next_refund_status = REFUND_STATUSES[status]
+
+
+def lose_next_refund_answer():
+	"""The gateway makes the next refund, but its answer is lost on the way back."""
+	StubRazorpayClient.lose_next_refund_answer = True
 
 
 def set_refund_status(refund: str, status: str):

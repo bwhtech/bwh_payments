@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Build With Hussain and contributors
 # See license.txt
 
+import inspect
 from unittest.mock import patch
 
 import frappe
@@ -9,6 +10,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
 from bwh_payments.api import (
+	create_payment,
 	get_gateway_options,
 	get_gateways,
 	record_external_payment,
@@ -116,6 +118,12 @@ class TestGateways(IntegrationTestCase):
 				self.assertIsInstance(settings, PaymentGatewayBase)
 				self.assertEqual(gateway.name, settings.get_gateway_name())
 
+	def test_every_gateway_accepts_a_checkout_description(self):
+		for gateway in get_gateways():
+			with self.subTest(gateway=gateway.name):
+				create_session = inspect.signature(frappe.get_single(gateway.settings_doctype).create_session)
+				create_session.bind(100, "INR", reference="GPR-0001", description="Acme · BK-0001")
+
 	def test_a_gateway_carries_what_a_merchant_needs_to_choose_and_set_it_up(self):
 		gateway = self.get_gateway("Razorpay")
 
@@ -185,3 +193,20 @@ class TestRefundsAndImports(RazorpayTestCase):
 		refund(payment_request.name, 70)
 
 		self.assertEqual(StubRazorpayClient.created_refunds[-1]["payment_id"], "pay_legacy_refundable")
+
+
+class TestPaymentDescription(RazorpayTestCase):
+	def test_the_description_is_kept_and_shown_at_the_checkout(self):
+		payment_request = create_payment(
+			"Currency", "INR", 100, "INR", RAZORPAY_GATEWAY, description="Acme Events via Buzz · BK-0001"
+		)
+
+		self.assertEqual(payment_request.description, "Acme Events via Buzz · BK-0001")
+		self.assertEqual(
+			StubRazorpayClient.created_links[-1]["description"], "Acme Events via Buzz · BK-0001"
+		)
+
+	def test_without_a_description_the_checkout_shows_the_default(self):
+		create_payment("Currency", "INR", 100, "INR", RAZORPAY_GATEWAY)
+
+		self.assertEqual(StubRazorpayClient.created_links[-1]["description"], "Online order payment")

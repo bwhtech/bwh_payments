@@ -4,7 +4,7 @@ from frappe.integrations.utils import create_request_log
 from frappe.rate_limiter import rate_limit
 
 from bwh_payments.base_class import WebhookEvent
-from bwh_payments.bwh_payments.utils import run_as_administrator
+from bwh_payments.bwh_payments.utils import run_as_administrator, without_commits
 from bwh_payments.services import GatewayUnavailableError
 
 WEBHOOK_ACCEPTED = {"status": "ok"}
@@ -105,13 +105,19 @@ def process_webhook(integration_request: str):
 
 	frappe.db.savepoint(WEBHOOK_SAVEPOINT)
 	try:
-		payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
-		apply_event_as_administrator(payment_request, event)
-	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError) as error:
-		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
-		# Frappe's job runner retries only RetryBackgroundJobError, not the DB errors it wraps.
+		# Live clients commit as they log each call, which would drop the savepoint and the row locks.
+		with without_commits():
+			payment_request = frappe.get_doc("Gateway Payment Request", log.reference_docname)
+			apply_event_as_administrator(payment_request, event)
+	except frappe.QueryDeadlockError as error:
+		# The database rolled the whole transaction back, savepoint and all: a deadlock, or a lock on a row
+		# changed after this job's first read under snapshot isolation. Frappe version-16's job runner
+		# retries RetryBackgroundJobError, not the DB errors it wraps.
 		raise frappe.RetryBackgroundJobError from error
-	except GatewayUnavailableError as error:
+	except frappe.QueryTimeoutError as error:
+		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
+		raise frappe.RetryBackgroundJobError from error
+	except (GatewayUnavailableError, frappe.RetryBackgroundJobError) as error:
 		frappe.db.rollback(save_point=WEBHOOK_SAVEPOINT)
 		# Failed and committed first, so it stays retryable by hand once Frappe's own retries run out.
 		log.handle_failure({"error": repr(error)})
@@ -143,24 +149,24 @@ def apply_event_as_administrator(payment_request, event: WebhookEvent):
 		if event.refund_id:
 			apply_refund_event(payment_request, event)
 		elif event.sync_status:
+			# A sync event asks the gateway about everything the payment is waiting on, and about refunds
+			# made at the gateway itself.
 			payment_request.sync_status()
+			payment_request.update_pending_refunds()
 		else:
 			payment_request.apply_webhook_status(event.status, event.event_id, event.transaction_ref)
 
 
 def apply_refund_event(payment_request, event: WebhookEvent):
-	if name := frappe.db.get_value("Gateway Refund", {"refund_id": event.refund_id}, "name"):
-		refund = frappe.get_doc("Gateway Refund", name)
-	elif frappe.db.exists(
-		"Gateway Refund",
-		{"payment_request": payment_request.name, "refund_id": ["is", "not set"], "status": "Pending"},
-	):
+	# The event may be the answer one of our refunds never got, and resending with its key recovers it.
+	payment_request.resend_unanswered_refunds()
+	payment_request.lock_row()
+	refund = payment_request.find_refund(event.refund_id)
+	if not refund and payment_request.has_unanswered_refunds():
 		# One of our refunds is still waiting for the gateway's answer and may be this one; recording
 		# it now as a stranger would count it twice.
 		raise frappe.RetryBackgroundJobError
-	else:
-		refund = payment_request.record_external_refund(event.refund_id, event.refund_amount)
-
+	refund = refund or payment_request.record_external_refund(event.refund_id, event.refund_amount)
 	refund.apply_gateway_status(event.status, event.event_id)
 
 

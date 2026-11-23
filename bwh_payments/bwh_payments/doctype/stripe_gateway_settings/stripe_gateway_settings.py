@@ -59,6 +59,7 @@ class StripeGatewaySettings(Document, PaymentGatewayBase):
 		reference: str | None = None,
 		customer: dict | None = None,
 		return_url: str | None = None,
+		description: str | None = None,
 	) -> CheckoutSession:
 		validate_transaction_currency(currency)
 		session = self.get_client().create_checkout_session(

@@ -41,10 +41,15 @@ PR titles must be conventional commits (`fix: ...`). Label a merged PR `backport
 `bwh_payments/base_class.py` defines `PaymentGatewayBase` (ABC): `create_session`, `get_payment_status`,
 `refund_payment`, `handle_webhook`. Optional methods have defaults, so a third-party gateway that skips them
 keeps working: `cancel_session` (False), `get_transaction_ref` (the settled payment's id; None),
+`get_payment_method` (how it was paid, such as `upi` or `card_credit`; None),
 `get_refund_status` (None = cannot report), `list_refunds` (None = cannot list; `sync_refunds` records
 the unknown ones), `supported_currencies` (None = any), and the `logo` /
 `logo_dark`, `description`, `docs_url` and `reusable_checkout` class attributes. `reusable_checkout` means
-the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url`, passed only when set.
+the checkout link stays payable after the shopper leaves it. `create_session` also takes an optional `return_url` and `description`, each passed only when set.
+`idempotent_refunds` means `refund_payment` takes `idempotency_key` (the Gateway Refund's name) and
+`transaction_ref` (the request's `gateway_transaction_ref`), and the same key always names the same refund.
+Only such a gateway gets them, so other gateways keep their old signature. Such a gateway raises
+`services.GatewayRefusedError` only when it answered no.
 Results are pydantic models: `CheckoutSession`, `RefundResult`, and `WebhookEvent | None` (a payment event
 carries `session_id` and, when only the webhook names the settled payment, `transaction_ref`; a refund
 event `refund_id`, `refund_amount` and `transaction_ref`; a payment event with `sync_status` makes the
@@ -92,7 +97,7 @@ To add a service, copy `services/razorpay/` and wire `get_client()` the same way
 as it stands.
 
 - `create_payment(ref_doctype, ref_docname, amount, currency, gateway, **fields)`: `fields` limited to
-  `company`, `redirect_to` (a path on this site) and `customer_*`.
+  `company`, `redirect_to` (a path on this site), `description` (checkout text) and `customer_*`.
 - `get_payment_gateways` (names), `get_gateway_options(currency=None)` (`GatewayOption`: name, title,
   logos), `validate_currency(gateway, currency)`, `resolve_payment_mode`.
 - `get_gateways()` (`GatewayInfo`): every installed gateway, enabled or not, with its settings DocType,
@@ -109,8 +114,9 @@ Refund status change calls `run_method("on_refund_update", refund)`; `refund.ref
 An insert that is already settled is an import and fires neither.
 
 `bwh_payments/testing.py` lets consumer apps test against the in-memory gateway without naming a provider:
-`configure_test_gateway`, `pay`, `set_next_refund_status`, `set_refund_status`, `send_refund_webhook`,
-`send_external_refund_webhook`, `without_commits`. `bwh_payments/migrate/frappe_payments.py`
+`configure_test_gateway`, `pay` (with an optional `payment_method`), `set_next_refund_status`, `set_refund_status`, `send_refund_webhook`,
+`send_external_refund_webhook`, `lose_next_refund_answer`, `without_commits`, and for races
+`other_connection`, `commit_elsewhere` and `reserve_refund_elsewhere`. `bwh_payments/migrate/frappe_payments.py`
 `import_gateways()` turns frappe/payments gateways into profiles with the same names.
 
 ### Payment flow
@@ -121,12 +127,16 @@ An insert that is already settled is an import and fires neither.
 2. `before_save` calls `create_session` once (when `order_ref` is empty) and stores `order_ref` (gateway
    session id, unique), `order_url` (checkout URL for the shopper) and the return URLs. With `redirect_to`,
    every return URL is `checkout.return_from_gateway?request=<name>`.
-3. Status moves from `Pending` by one of three paths, all under a row lock (`lock_row`). On the move to
-   `Paid`, `gateway_transaction_ref` is read through `get_transaction_ref` (a failure never blocks it).
+3. Status moves from `Pending` by one of three paths, all under a row lock (`lock_row`, which reloads with
+   a locking read: a plain read keeps the transaction's old snapshot under REPEATABLE READ). On the move to
+   `Paid`, `gateway_transaction_ref` and `payment_method` are read through `get_transaction_ref` and
+   `get_payment_method` (a failure never blocks it).
    - **Webhook**: `webhook.handle` (guest POST, `?gateway=<profile>`, rate-limited) verifies the delivery,
      logs the parsed event as a Queued Integration Request (deduped on the event id), answers 200 and
      queues `process_webhook`. The job applies it as Administrator (a `sync_status` event runs
-     `sync_status` on a Pending request instead); a failure is rolled back to a
+     `sync_status` on a Pending request instead, then `update_pending_refunds`, which also records refunds
+     `list_refunds` names) with commits held, so a live client's request log cannot
+     drop the savepoint. A failure is rolled back to that
      savepoint, logged and marked Failed for `retry_webhook` (System Manager). Deadlocks and lock timeouts
      are raised as `RetryBackgroundJobError`, because Frappe's job runner does not retry the
      `QueryDeadlockError` / `QueryTimeoutError` it wraps them in. A live client raises
@@ -136,17 +146,47 @@ An insert that is already settled is an import and fires neither.
      to `redirect_to`. Never trust the browser redirect itself.
    - **Pull**: whitelisted `sync_status` asks the gateway, and only while the request is Pending, because
      asking may capture.
+   - **Embedded**: see [Embedded checkout](#embedded-checkout).
 4. `create_refund(amount=None, reference=None, payment_entry=None)` checks the amount under the row lock,
    inserts a **Gateway Refund** as `Pending` and commits it before calling the gateway, so the reservation
    holds once the lock is gone (Pending refunds count against what is left). The gateway's answer is
    normalised to `Pending` / `Processed` / `Failed`; a refusal is kept as `Failed` with its error. Only a
-   `Processed` refund adds to `refund_amount` and sets `Partially Refunded` / `Refunded`. Pending refunds
+   `Processed` refund adds to `refund_amount` and sets `Partially Refunded` / `Refunded`. On a gateway with
+   `idempotent_refunds`, only a `GatewayRefusedError` fails the refund (`is_refusal`). Any other error, such
+   as no answer, an unreadable answer or a failed log write, may come after the gateway made the refund, so
+   it stays `Pending` without a `refund_id`, its amount still reserved. `sync_refunds`, a sync webhook and a
+   refund webhook send it again with the same key, which returns the refund the gateway already made, or
+   makes it now. A refusal of that resend fails the refund, unless another worker settled it first. Pending refunds
    settle by refund webhook or `sync_refunds`; a refund raised on the gateway's dashboard arrives by
    webhook and is found through `gateway_transaction_ref`. `refund()` and `release_if_unpaid()` are not
    whitelisted: Frappe's `run_doc_method` checks only read permission.
 5. ERPNext bridge (`hooks.py` `doc_events`): submitting a `Payment Entry` with `payment_type = "Pay"`,
    `reference_no` = `order_ref` and `mode_of_payment` = the gateway profile name refunds through the
    gateway. Amended entries are traced back via `amended_from` so a refund is never sent twice.
+
+### Embedded checkout
+
+A caller whose page should open the gateway's own dialog, rather than leave the site, asks
+`create_payment(..., checkout="embedded")`. Only a gateway with `supports_embedded_checkout` (Razorpay, on
+an Order) does so; every other gateway falls back to a redirect, so read the request's `checkout` before
+choosing what the page shows.
+
+1. `create_embedded_session(amount, currency, reference, customer, description)` returns an
+   `EmbeddedCheckout`: `session_id` (stored as `order_ref`), the gateway's `script_url`, and `options` for
+   that script. The request keeps them in `checkout_options`; there is no `order_url`.
+2. The caller's page loads `script_url` and opens it with `get_embedded_checkout().options`, as they are.
+   Razorpay's options are the public key, order id, amount in minor units, currency, name, description and
+   the customer prefill: nothing secret.
+3. What the script hands back (Razorpay: `razorpay_payment_id`, `razorpay_order_id`, `razorpay_signature`)
+   goes to the caller's own endpoint, which calls `api.confirm_embedded_payment(payment_request, payload)`.
+   `verify_embedded_payment` checks it against our own `order_ref` (never the order id the browser sends),
+   then asks the gateway for the status; a payload that is not the gateway's own raises
+   `frappe.ValidationError`. The status is applied under the row lock, and the request's status is returned.
+4. A shopper who closes the dialog has not paid; the request stays `Pending`. The webhook (`order.paid`,
+   `payment.captured` on Razorpay) and `sync_status` still settle a payment the page never confirmed.
+
+`testing.complete_embedded_checkout(payment_request, payment_method)` plays the shopper paying and returns
+the payload the script would hand the page.
 
 ### Gateway-specific behavior worth knowing
 
@@ -157,7 +197,11 @@ An insert that is already settled is an import and fires neither.
 - **Razorpay**: raw HTTP (Payment Links API) via `frappe.integrations.utils.make_post_request` /
   `make_get_request`, no SDK. Refund events: `refund.created` (pending), `refund.processed`,
   `refund.failed`. A session id starting `pay_` is a payment imported from before Payment Links and is
-  refunded directly.
+  refunded directly. Refunds are `idempotent_refunds`: the key goes in the `X-Refund-Idempotency` header.
+  A timeout, a dropped connection, a 5xx, a 429 or a 409 (the same key still in progress) is a
+  `GatewayUnavailableError`; another 4xx is a `GatewayRefusedError`. A 2xx refund with status `failed` is a
+  refusal; a missing or unknown status reads as `pending`. A refund goes to the stored payment id,
+  since a payment refunded in full reads `refunded`, not `captured`.
 - **Telr**: no signed webhook. `handle_webhook` returns `None` on purpose; status comes only from
   `get_payment_status`.
 - **Tabby**: unsigned webhooks, checked with a static header token plus a source-IP allowlist.

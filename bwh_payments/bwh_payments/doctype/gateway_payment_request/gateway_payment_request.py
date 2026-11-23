@@ -6,10 +6,11 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils.data import cstr, flt
 
-from bwh_payments.base_class import CheckoutSession, RefundResult
+from bwh_payments.base_class import CheckoutSession, EmbeddedCheckout, RefundResult
 from bwh_payments.bwh_payments.checkout import get_return_url
-from bwh_payments.bwh_payments.utils import is_local_path
+from bwh_payments.bwh_payments.utils import is_local_path, reload_for_update, without_commits
 from bwh_payments.currency import get_minor_unit_exponent
+from bwh_payments.services import GatewayRefusedError
 
 REFUNDABLE_STATUSES = ("Paid", "Partially Refunded")
 WEBHOOK_WRITABLE_STATUSES = ("Paid", "Not Paid", "Cancelled", "Expired")
@@ -26,6 +27,8 @@ class GatewayPaymentRequest(Document):
 
 		amount: DF.Currency
 		cancel_url: DF.Data | None
+		checkout: DF.Literal["Redirect", "Embedded"]
+		checkout_options: DF.JSON | None
 		company: DF.Link | None
 		currency_code: DF.Link
 		customer_address: DF.Link | None
@@ -34,6 +37,7 @@ class GatewayPaymentRequest(Document):
 		customer_phone: DF.Data | None
 		customer_ref: DF.Link | None
 		customer_surname: DF.Data | None
+		description: DF.SmallText | None
 		erpnext_payment_request: DF.Link | None
 		failure_url: DF.Data | None
 		gateway: DF.Link
@@ -41,6 +45,7 @@ class GatewayPaymentRequest(Document):
 		last_webhook_event_id: DF.Data | None
 		order_ref: DF.Data | None
 		order_url: DF.SmallText | None
+		payment_method: DF.Data | None
 		ref_docname: DF.DynamicLink
 		ref_doctype: DF.Link
 		refund_amount: DF.Currency
@@ -85,6 +90,7 @@ class GatewayPaymentRequest(Document):
 			self.create_session()
 		elif not self.is_new() and self.has_value_changed("status") and self.status == "Paid":
 			self.gateway_transaction_ref = self.gateway_transaction_ref or self.fetch_transaction_ref()
+			self.payment_method = self.payment_method or self.fetch_payment_method()
 
 	def on_update(self):
 		# frappe/payments convention, so apps written for it settle orders unchanged.
@@ -105,15 +111,18 @@ class GatewayPaymentRequest(Document):
 		return frappe.get_single(gateway_settings)
 
 	def create_session(self):
-		# Passed only when set, so gateways written before return_url keep working.
-		return_url = {"return_url": get_return_url(self.name)} if self.redirect_to else {}
+		settings = self.get_gateway_settings()
+		if self.checkout == "Embedded" and settings.supports_embedded_checkout:
+			return self.create_embedded_session(settings)
+
+		self.checkout = "Redirect"
 		session = CheckoutSession.model_validate(
-			self.get_gateway_settings().create_session(
+			settings.create_session(
 				flt(self.amount),
 				self.currency_code,
 				reference=self.name,
 				customer=self.get_customer_details(),
-				**return_url,
+				**self.get_optional_session_arguments(),
 			)
 		)
 		self.order_ref = session.session_id
@@ -122,13 +131,65 @@ class GatewayPaymentRequest(Document):
 		self.cancel_url = session.cancel_url
 		self.failure_url = session.failure_url
 
+	def create_embedded_session(self, settings):
+		session = EmbeddedCheckout.model_validate(
+			settings.create_embedded_session(
+				flt(self.amount),
+				self.currency_code,
+				reference=self.name,
+				customer=self.get_customer_details(),
+				description=self.description,
+			)
+		)
+		self.order_ref = session.session_id
+		self.checkout_options = frappe.as_json(session.model_dump(exclude={"session_id"}))
+
+	def get_embedded_checkout(self) -> EmbeddedCheckout:
+		self.validate_embedded_checkout()
+		return EmbeddedCheckout(session_id=self.order_ref, **frappe.parse_json(self.checkout_options))
+
+	def confirm_embedded_payment(self, payload: dict) -> str:
+		"""Apply what the embedded checkout handed the page, once the gateway vouches for it."""
+		self.validate_embedded_checkout()
+		if self.status == "Pending":
+			status = self.get_gateway_settings().verify_embedded_payment(self.order_ref, payload)
+			self.apply_webhook_status(status)
+		return self.status
+
+	def validate_embedded_checkout(self):
+		if self.checkout != "Embedded":
+			frappe.throw(_("Payment {0} is not an embedded checkout").format(self.name))
+
+	def get_optional_session_arguments(self) -> dict:
+		# Passed only when set, so gateways written before these arguments keep working.
+		arguments = {"return_url": get_return_url(self.name)} if self.redirect_to else {}
+		if self.description:
+			arguments["description"] = self.description
+		return arguments
+
 	def fetch_transaction_ref(self) -> str | None:
+		return self.fetch_from_gateway(
+			lambda settings: settings.get_transaction_ref(self.order_ref),
+			_("Could not read the settled transaction for {0}").format(self.name),
+		)
+
+	def fetch_payment_method(self) -> str | None:
+		return self.fetch_from_gateway(
+			lambda settings: settings.get_payment_method(
+				self.order_ref, transaction_ref=self.gateway_transaction_ref
+			),
+			_("Could not read the payment method for {0}").format(self.name),
+		)
+
+	def fetch_from_gateway(self, read, error_title: str):
+		"""Only refunds and payouts need what is read here, so a failed lookup must not block the payment."""
 		try:
-			return self.get_gateway_settings().get_transaction_ref(self.order_ref)
+			# Live clients log each call, and that commit would drop the settlement lock mid-save.
+			with without_commits():
+				return read(self.get_gateway_settings())
 		except Exception:
-			# Only refunds raised outside this app need it, so a failed lookup must not block the payment.
 			frappe.clear_last_message()
-			frappe.log_error(title=_("Could not read the settled transaction for {0}").format(self.name))
+			frappe.log_error(title=error_title)
 			return None
 
 	def get_customer_details(self) -> dict:
@@ -193,8 +254,13 @@ class GatewayPaymentRequest(Document):
 		return flt(flt(self.amount, precision) - flt(self.refund_amount, precision), precision)
 
 	def get_pending_refund_amount(self) -> float:
-		pending = frappe.get_all(
-			"Gateway Refund", filters={"payment_request": self.name, "status": "Pending"}, pluck="amount"
+		"""A locking read, so a refund another worker reserved after this transaction's snapshot counts."""
+		pending = frappe.db.get_values(
+			"Gateway Refund",
+			{"payment_request": self.name, "status": "Pending"},
+			"amount",
+			for_update=True,
+			pluck=True,
 		)
 		return sum(flt(amount) for amount in pending)
 
@@ -208,14 +274,8 @@ class GatewayPaymentRequest(Document):
 		return "Partially Refunded"
 
 	def lock_row(self):
-		"""Row lock plus reload, so concurrent refunds cannot both pass the over-refund guard."""
-		frappe.db.get_value(
-			"Gateway Payment Request",
-			self.name,
-			["amount", "refund_amount", "status"],
-			for_update=True,
-		)
-		self.reload()
+		"""Concurrent refunds and settlements wait here, then see what the other one committed."""
+		reload_for_update(self)
 
 	def refund(self, amount: float | None = None, payment_entry: str | None = None) -> dict:
 		self.create_refund(amount, payment_entry=payment_entry)
@@ -255,6 +315,8 @@ class GatewayPaymentRequest(Document):
 				)
 			)
 
+		# Read first: past the commit below, an error leaves the refund reserved and Pending.
+		settings = self.get_gateway_settings()
 		refund = frappe.get_doc(
 			{
 				"doctype": "Gateway Refund",
@@ -268,15 +330,31 @@ class GatewayPaymentRequest(Document):
 		# refund holds its amount against any concurrent refund.
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
-		try:
-			result = self.get_gateway_settings().refund_payment(self.order_ref, amount, self.currency_code)
-		except Exception as error:
-			refund.mark_failed(str(error))
+		if refusal := self.dispatch_refund(settings, refund):
 			frappe.db.commit()  # nosemgrep: frappe-manual-commit
-			raise
-
-		refund.apply_gateway_result(RefundResult.model_validate(result or {}))
+			raise refusal
 		return refund
+
+	def dispatch_refund(self, settings, refund) -> Exception | None:
+		"""Send the refund and apply the answer. A refusal fails the refund and is returned, any other error
+		is raised and keeps it Pending."""
+		try:
+			result = self.send_refund(settings, refund)
+		except Exception as error:
+			if not is_refusal(settings, error):
+				raise
+			start_answer_transaction()
+			return error if refund.mark_failed(str(error)) else None
+		start_answer_transaction()
+		refund.apply_gateway_result(result)
+		return None
+
+	def send_refund(self, settings, refund) -> RefundResult:
+		keywords = {}
+		if settings.idempotent_refunds:
+			keywords = {"idempotency_key": refund.name, "transaction_ref": self.gateway_transaction_ref}
+		result = settings.refund_payment(self.order_ref, flt(refund.amount), self.currency_code, **keywords)
+		return RefundResult.model_validate(result or {})
 
 	@frappe.whitelist()
 	def sync_refunds(self):
@@ -287,6 +365,12 @@ class GatewayPaymentRequest(Document):
 	def update_pending_refunds(self):
 		"""Ask the gateway about every Pending refund, for when a refund webhook never arrived."""
 		settings = self.get_gateway_settings()
+		self.settle_pending_refunds(settings)
+		self.record_unknown_refunds(settings)
+
+	def settle_pending_refunds(self, settings=None):
+		settings = settings or self.get_gateway_settings()
+		self.resend_unanswered_refunds(settings)
 		for name in frappe.get_all(
 			"Gateway Refund",
 			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "set"]},
@@ -297,24 +381,49 @@ class GatewayPaymentRequest(Document):
 			if result:
 				refund.apply_gateway_status(RefundResult.model_validate(result).status)
 
-		self.record_unknown_refunds(settings)
+	def resend_unanswered_refunds(self, settings=None):
+		"""The same key makes the gateway return the refund it already made, or make it now."""
+		settings = settings or self.get_gateway_settings()
+		if not settings.idempotent_refunds:
+			return
+		for name in frappe.get_all(
+			"Gateway Refund",
+			filters={"payment_request": self.name, "status": "Pending", "refund_id": ["is", "not set"]},
+			pluck="name",
+		):
+			if self.dispatch_refund(settings, frappe.get_doc("Gateway Refund", name)):
+				frappe.clear_last_message()
 
 	def record_unknown_refunds(self, settings):
 		"""Record refunds raised outside this app whose webhook never arrived."""
+		results = [
+			RefundResult.model_validate(result) for result in settings.list_refunds(self.order_ref) or []
+		]
+		# Under the lock, so a refund webhook recording the same refund meanwhile is seen here.
+		self.lock_row()
 		# One of our refunds still waiting for its id may be among them; recording it now would count it twice.
-		if frappe.db.exists(
-			"Gateway Refund",
-			{"payment_request": self.name, "refund_id": ["is", "not set"], "status": "Pending"},
-		):
+		if self.has_unanswered_refunds():
 			return
-
-		known = set(frappe.get_all("Gateway Refund", {"payment_request": self.name}, pluck="refund_id"))
-		for result in settings.list_refunds(self.order_ref) or []:
-			result = RefundResult.model_validate(result)
-			if result.refund_id and result.refund_id not in known:
+		for result in results:
+			if result.refund_id and not self.find_refund(result.refund_id):
 				self.record_external_refund(result.refund_id, result.amount).apply_gateway_status(
 					result.status
 				)
+
+	def find_refund(self, refund_id: str):
+		"""Locking reads, so a refund another worker recorded after this transaction's snapshot is found."""
+		name = frappe.db.get_value("Gateway Refund", {"refund_id": refund_id}, "name", for_update=True)
+		return frappe.get_doc("Gateway Refund", name, for_update=True) if name else None
+
+	def has_unanswered_refunds(self) -> bool:
+		return bool(
+			frappe.db.get_value(
+				"Gateway Refund",
+				{"payment_request": self.name, "refund_id": ["is", "not set"], "status": "Pending"},
+				"name",
+				for_update=True,
+			)
+		)
 
 	def record_external_refund(self, refund_id: str, amount: float):
 		"""Record a refund raised outside this app, e.g. from the gateway's dashboard."""
@@ -329,9 +438,12 @@ class GatewayPaymentRequest(Document):
 
 	def get_refund_for_payment_entry(self, payment_entry: str):
 		name = frappe.db.get_value(
-			"Gateway Refund", {"payment_entry": payment_entry, "status": ["!=", "Failed"]}, "name"
+			"Gateway Refund",
+			{"payment_entry": payment_entry, "status": ["!=", "Failed"]},
+			"name",
+			for_update=True,
 		)
-		return frappe.get_doc("Gateway Refund", name) if name else None
+		return frappe.get_doc("Gateway Refund", name, for_update=True) if name else None
 
 	def add_processed_refund(self, refund):
 		self.lock_row()
@@ -375,6 +487,21 @@ class GatewayPaymentRequest(Document):
 		self.last_webhook_event_id = event_id
 		self.save(ignore_permissions=True)
 		return True
+
+
+def start_answer_transaction():
+	"""The gateway's answer is applied in a transaction whose first read is its lock.
+
+	Under MariaDB's snapshot isolation, a lock on a row another worker changed after an earlier read in
+	the transaction fails it, and the refund the gateway just made would stay unrecorded. A no-op inside
+	`without_commits()`, where such a failure retries the webhook job instead.
+	"""
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
+
+def is_refusal(settings, error: Exception) -> bool:
+	"""A gateway without idempotency keys cannot be asked again, so any error fails its refund."""
+	return not settings.idempotent_refunds or isinstance(error, GatewayRefusedError)
 
 
 def get_original_payment_entry(payment_entry: str | int) -> str:

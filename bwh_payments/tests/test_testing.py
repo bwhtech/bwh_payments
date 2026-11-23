@@ -9,19 +9,22 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 
 from bwh_payments import testing
-from bwh_payments.api import create_payment, refund, sync_refunds
+from bwh_payments.api import confirm_embedded_payment, create_payment, refund, sync_refunds
+
+# Not the default "Test Gateway": a consumer app's settings on the same site may still link to that one.
+GATEWAY = "bwh_payments Helpers Gateway"
 
 
 class TestConsumerTestHelpers(IntegrationTestCase):
 	def setUp(self):
 		testing.reset()
-		self.gateway = testing.configure_test_gateway()
+		self.gateway = testing.configure_test_gateway(GATEWAY)
 
 	@classmethod
 	def tearDownClass(cls):
 		super().tearDownClass()
 		frappe.db.rollback()
-		testing.remove_test_gateway()
+		testing.remove_test_gateway(GATEWAY)
 		frappe.db.commit()
 
 	def make_paid_payment(self):
@@ -39,6 +42,28 @@ class TestConsumerTestHelpers(IntegrationTestCase):
 		on_payment_authorized.assert_called_once_with("Completed")
 		self.assertEqual(
 			frappe.db.get_value("Gateway Payment Request", payment_request.name, "status"), "Paid"
+		)
+
+	def test_pay_records_the_payment_method_the_test_asks_for(self):
+		payment_request = create_payment("Currency", "INR", 100, "INR", self.gateway)
+
+		testing.pay(payment_request.name, payment_method="card_debit")
+
+		self.assertEqual(
+			frappe.db.get_value("Gateway Payment Request", payment_request.name, "payment_method"),
+			"card_debit",
+		)
+
+	def test_an_embedded_checkout_paid_in_the_dialog_is_confirmed_by_the_request(self):
+		payment_request = create_payment("Currency", "INR", 100, "INR", self.gateway, checkout="embedded")
+
+		result = testing.complete_embedded_checkout(payment_request.name, payment_method="card_credit")
+
+		self.assertEqual(result["razorpay_order_id"], payment_request.order_ref)
+		self.assertEqual(confirm_embedded_payment(payment_request.name, result), "Paid")
+		self.assertEqual(
+			frappe.db.get_value("Gateway Payment Request", payment_request.name, "payment_method"),
+			"card_credit",
 		)
 
 	def test_a_pending_refund_settles_when_its_webhook_arrives(self):

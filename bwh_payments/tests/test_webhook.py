@@ -4,13 +4,15 @@
 from unittest.mock import patch
 
 import frappe
+from frappe import _
 from frappe.geo.doctype.currency.currency import Currency
+from frappe.integrations.utils import create_request_log
 from frappe.tests import IntegrationTestCase
 from frappe.utils.data import flt
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
-from bwh_payments.base_class import WebhookEvent
+from bwh_payments.base_class import RefundResult, WebhookEvent
 from bwh_payments.bwh_payments import webhook
 from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_payment_request import (
 	GATEWAY,
@@ -19,6 +21,10 @@ from bwh_payments.bwh_payments.doctype.gateway_payment_request.test_gateway_paym
 	make_payment_request,
 	remove_stripe_gateway,
 )
+from bwh_payments.bwh_payments.doctype.stripe_gateway_settings.stripe_gateway_settings import (
+	StripeGatewaySettings,
+)
+from bwh_payments.services import GatewayUnavailableError
 from bwh_payments.services.stripe.stub import (
 	StubStripeClient,
 	build_checkout_completed_event,
@@ -247,3 +253,82 @@ class TestWebhook(IntegrationTestCase):
 		payment_request.reload()
 		self.assertEqual(refund.status, "Processed")
 		self.assertEqual(flt(payment_request.refund_amount), 30)
+
+	def test_a_sync_event_also_settles_the_pending_refunds(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		StubStripeClient.next_refund_status = "pending"
+		refund = payment_request.create_refund(30)
+		StubStripeClient.set_refund_status(refund.refund_id, "succeeded")
+
+		webhook.process_webhook(
+			webhook.log_webhook(
+				GATEWAY,
+				event=WebhookEvent(session_id=payment_request.order_ref, status="Pending", sync_status=True),
+				reference_docname=payment_request.name,
+			).name
+		)
+
+		refund.reload()
+		self.assertEqual(refund.status, "Processed")
+
+	def test_a_sync_event_records_a_refund_made_at_the_gateway(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		made_at_the_gateway = [RefundResult(refund_id="re_dashboard", status="succeeded", amount=30)]
+
+		with patch.object(StripeGatewaySettings, "list_refunds", return_value=made_at_the_gateway):
+			webhook.process_webhook(
+				webhook.log_webhook(
+					GATEWAY,
+					event=WebhookEvent(
+						session_id=payment_request.order_ref, status="Pending", sync_status=True
+					),
+					reference_docname=payment_request.name,
+				).name
+			)
+
+		payment_request.reload()
+		self.assertEqual(
+			(flt(payment_request.refund_amount), payment_request.status), (30, "Partially Refunded")
+		)
+
+	def test_a_sync_event_the_gateway_stops_answering_is_rolled_back_and_retried(self):
+		payment_request = make_payment_request(100, "SAR")
+		StubStripeClient.pay(payment_request.order_ref)
+		payment_request.sync_status()
+		StubStripeClient.next_refund_status = "pending"
+		refunds = [payment_request.create_refund(30), payment_request.create_refund(20)]
+		for refund in refunds:
+			StubStripeClient.set_refund_status(refund.refund_id, "succeeded")
+		retrieve_refund, answers = StubStripeClient.retrieve_refund, []
+
+		def retrieve_as_the_live_client(client, refund_id):
+			# The live client logs every call, and logging commits.
+			create_request_log({"endpoint": refund_id}, service_name="Stripe", is_remote_request=True)
+			if answers:
+				frappe.throw(_("Stripe did not answer"), exc=GatewayUnavailableError)
+			answers.append(refund_id)
+			return retrieve_refund(client, refund_id)
+
+		log = webhook.log_webhook(
+			GATEWAY,
+			event=WebhookEvent(session_id=payment_request.order_ref, status="Pending", sync_status=True),
+			reference_docname=payment_request.name,
+		)
+		with (
+			patch.object(
+				StubStripeClient, "retrieve_refund", autospec=True, side_effect=retrieve_as_the_live_client
+			),
+			self.assertRaises(frappe.RetryBackgroundJobError),
+		):
+			webhook.process_webhook(log.name)
+
+		self.assertEqual(frappe.db.get_value("Integration Request", log.name, "status"), "Failed")
+		statuses = [frappe.db.get_value("Gateway Refund", refund.name, "status") for refund in refunds]
+		self.assertEqual(statuses, ["Pending", "Pending"])
+		self.assertEqual(
+			flt(frappe.db.get_value("Gateway Payment Request", payment_request.name, "refund_amount")), 0
+		)
